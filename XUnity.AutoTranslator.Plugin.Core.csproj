@@ -1,0 +1,152 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<TargetFramework>net6.0</TargetFramework>
+		<LangVersion>latest</LangVersion>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<Version>1.0.0</Version>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<GenerateDependencyFile>false</GenerateDependencyFile>
+		<GenerateDocumentationFile>false</GenerateDocumentationFile>
+		<GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+		<CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+		<DebugType>none</DebugType>
+		<DebugSymbols>false</DebugSymbols>
+		<NoWarn>$(NoWarn);MSB3277</NoWarn>
+		<MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
+	</PropertyGroup>
+
+	<ItemDefinitionGroup>
+		<Reference>
+			<Private>false</Private>
+		</Reference>
+	</ItemDefinitionGroup>
+
+	<ItemGroup>
+		<EmbeddedResource Include="XUnity.AutoTranslator.Plugin.Core\Fonts\sdwfonts\*.otf">
+			<LogicalName>Fonts.sdwfonts.%(Filename)%(Extension)</LogicalName>
+		</EmbeddedResource>
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="ILRepack.Lib.MSBuild.Task" Version="2.0.37" PrivateAssets="All" />
+		<PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Reference Include="0Harmony">
+			<HintPath>libs\0Harmony.dll</HintPath>
+		</Reference>
+		<Reference Include="ExIni">
+			<HintPath>libs\ExIni.dll</HintPath>
+		</Reference>
+		<Reference Include="ICSharpCode.SharpZipLib">
+			<HintPath>libs\ICSharpCode.SharpZipLib.dll</HintPath>
+		</Reference>
+		<Reference Include="Il2CppInterop.Common">
+			<HintPath>libs\Unhollower\Il2CppInterop.Common.dll</HintPath>
+		</Reference>
+		<Reference Include="Il2CppInterop.Runtime">
+			<HintPath>libs\Unhollower\Il2CppInterop.Runtime.dll</HintPath>
+		</Reference>
+		<Reference Include="Il2Cppmscorlib">
+			<HintPath>libs\Proxies\Il2Cppmscorlib.dll</HintPath>
+		</Reference>
+		<Reference Include="Mono.Cecil">
+			<HintPath>libs\MonoMod\Mono.Cecil.dll</HintPath>
+		</Reference>
+		<Reference Include="MonoMod.RuntimeDetour">
+			<HintPath>libs\MonoMod\MonoMod.RuntimeDetour.dll</HintPath>
+		</Reference>
+		<Reference Include="MonoMod.Utils">
+			<HintPath>libs\MonoMod\MonoMod.Utils.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.AssetBundleModule">
+			<HintPath>libs\Proxies\UnityEngine.AssetBundleModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.CoreModule">
+			<HintPath>libs\Proxies\UnityEngine.CoreModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.IMGUIModule">
+			<HintPath>libs\Proxies\UnityEngine.IMGUIModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.TextRenderingModule">
+			<HintPath>libs\Proxies\UnityEngine.TextRenderingModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.UnityWebRequestWWWModule">
+			<HintPath>libs\Proxies\UnityEngine.UnityWebRequestWWWModule.dll</HintPath>
+		</Reference>
+		<Reference Include="XUnity.AutoTranslator.Plugin.ExtProtocol">
+			<HintPath>libs\XUnity.AutoTranslator.Plugin.ExtProtocol.dll</HintPath>
+		</Reference>
+		<Reference Include="XUnity.Common">
+			<HintPath>libs\XUnity.Common.dll</HintPath>
+		</Reference>
+		<Reference Include="XUnity.ResourceRedirector">
+			<HintPath>libs\XUnity.ResourceRedirector.dll</HintPath>
+		</Reference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Compile Update="XUnity.AutoTranslator.Plugin.Core\Properties\Resources.Designer.cs">
+			<DesignTime>True</DesignTime>
+			<AutoGen>True</AutoGen>
+			<DependentUpon>Resources.resx</DependentUpon>
+		</Compile>
+	</ItemGroup>
+
+	<ItemGroup>
+		<EmbeddedResource Update="XUnity.AutoTranslator.Plugin.Core\Properties\Resources.resx">
+			<LogicalName>XUnity.AutoTranslator.Plugin.Core.Properties.Resources.resources</LogicalName>
+			<Generator>ResXFileCodeGenerator</Generator>
+			<LastGenOutput>Resources.Designer.cs</LastGenOutput>
+		</EmbeddedResource>
+	</ItemGroup>
+
+	<Target Name="AddGeneratedFile" BeforeTargets="BeforeCompile;CoreCompile" Inputs="$(MSBuildAllProjects)" Outputs="$(IntermediateOutputPath)GeneratedInfo.cs">
+		<PropertyGroup>
+			<GeneratedText><![CDATA[namespace $(RootNamespace) { internal static class GeneratedInfo { public const string PROJECT_VERSION = "$(Version)"%3B } }]]></GeneratedText>
+			<GeneratedFilePath>$(IntermediateOutputPath)GeneratedInfo.cs</GeneratedFilePath>
+		</PropertyGroup>
+		<ItemGroup>
+			<Compile Include="$(GeneratedFilePath)" />
+			<FileWrites Include="$(GeneratedFilePath)" />
+		</ItemGroup>
+		<WriteLinesToFile Lines="$(GeneratedText)" File="$(GeneratedFilePath)" Overwrite="true" />
+	</Target>
+
+	<Target Name="ILRepackNET60" AfterTargets="Build">
+		<PropertyGroup>
+			<LibsDir>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\libs'))\</LibsDir>
+		</PropertyGroup>
+
+		<ItemGroup>
+			<InputAssemblies Include="$(TargetDir)$(AssemblyName).dll" />
+			<InputAssemblies Include="$(LibsDir)ICSharpCode.SharpZipLib.dll" />
+			<InputAssemblies Include="$(LibsDir)XUnity.AutoTranslator.Plugin.ExtProtocol.dll" />
+			<InputAssemblies Include="$(LibsDir)XUnity.Common.dll" />
+			<InputAssemblies Include="$(LibsDir)XUnity.ResourceRedirector.dll" />
+		</ItemGroup>
+
+		<ItemGroup>
+			<ILRepackLibPaths Include="$(NetCoreTargetingPackRoot)\Microsoft.NETCore.App.Ref\**\ref\net6.0\" />
+			<ILRepackLibPaths Include="$(LibsDir)" />
+			<ILRepackLibPaths Include="$(LibsDir)MonoMod\" />
+			<ILRepackLibPaths Include="$(LibsDir)Proxies\" />
+			<ILRepackLibPaths Include="$(LibsDir)Unhollower\" />
+		</ItemGroup>
+
+		<Message Text="MERGING: @(InputAssemblies) -&gt; $(TargetDir)$(AssemblyName).dll" Importance="High" />
+
+		<ILRepack InputAssemblies="@(InputAssemblies)" OutputFile="$(TargetDir)$(AssemblyName).dll" TargetKind="Dll" LibraryPath="@(ILRepackLibPaths)" />
+	</Target>
+
+	<Target Name="CleanOutputDir" AfterTargets="ILRepackNET60">
+		<ItemGroup>
+			<ExtraOutputFiles Include="$(TargetDir)*" Exclude="$(TargetDir)$(AssemblyName).dll" />
+		</ItemGroup>
+		<Delete Files="@(ExtraOutputFiles)" />
+	</Target>
+
+</Project>
