@@ -14,7 +14,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
    {
       private const int MaxCacheEntries = 4096;
       private const int MinLiteralLetters = 3;
-      private const int ReloadCheckIntervalMs = 2000;
       private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds( 50 );
 
       private static readonly Regex PlaceholderRegex = new Regex( @"\{(\d+)(?:[,:][^{}]*)?\}", RegexOptions.CultureInvariant );
@@ -43,6 +42,18 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static readonly Dictionary<string, Hit> _cache = new Dictionary<string, Hit>( StringComparer.Ordinal );
 
+      public static void Preload()
+      {
+         try
+         {
+            RefreshIfNeeded();
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Warn( e, "SdwPatternTranslator: preload failed." );
+         }
+      }
+
       public static bool HasPatterns
       {
          get
@@ -50,11 +61,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             RefreshIfNeeded();
             return _patterns.Length > 0 || _fuzzy.Count > 0;
          }
-      }
-
-      public static bool TryTranslate( string text, out string translated )
-      {
-         return TryTranslate( text, out translated, out _ );
       }
 
       public static bool TryTranslate( string text, out string translated, out string source )
@@ -90,9 +96,10 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          var hit = new Hit();
          foreach( var candidate in Variants( text ) )
          {
-            for( int i = 0; i < patterns.Length && hit.Result == null; i++ )
+            var order = CollectCandidatePatterns( patterns, candidate );
+            for( int k = 0; k < order.Count && hit.Result == null; k++ )
             {
-               var p = patterns[ i ];
+               var p = patterns[ order[ k ] ];
 
                if( p.Anchor.Length > 0 && candidate.IndexOf( p.Anchor, StringComparison.Ordinal ) < 0 )
                {
@@ -131,6 +138,96 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          translated = hit.Result;
          source = hit.Source;
          return hit.Result != null;
+      }
+
+      private static Dictionary<long, List<int>> _trigramIndex = new Dictionary<long, List<int>>();
+      private static List<int> _unindexedPatterns = new List<int>();
+      private static Pattern[] _indexOwner;
+      private static int[] _indexStamp = new int[ 0 ];
+      private static int _indexStampCounter;
+
+      private static long Trigram( string s, int pos )
+      {
+         return ( (long)s[ pos ] << 32 ) | ( (long)s[ pos + 1 ] << 16 ) | (long)s[ pos + 2 ];
+      }
+
+      private static void BuildPatternIndex( Pattern[] patterns )
+      {
+         var index = new Dictionary<long, List<int>>();
+         var unindexed = new List<int>();
+
+         for( int i = 0; i < patterns.Length; i++ )
+         {
+            var anchor = patterns[ i ].Anchor;
+            if( anchor == null || anchor.Length < 3 )
+            {
+               unindexed.Add( i );
+               continue;
+            }
+
+            var key = Trigram( anchor, 0 );
+            List<int> list;
+            if( !index.TryGetValue( key, out list ) )
+            {
+               list = new List<int>();
+               index[ key ] = list;
+            }
+            list.Add( i );
+         }
+
+         _trigramIndex = index;
+         _unindexedPatterns = unindexed;
+         _indexStamp = new int[ patterns.Length ];
+         _indexStampCounter = 0;
+         _indexOwner = patterns;
+      }
+
+      private static List<int> CollectCandidatePatterns( Pattern[] patterns, string candidate )
+      {
+         var result = new List<int>( 32 );
+
+         if( !ReferenceEquals( _indexOwner, patterns ) || _indexStamp.Length != patterns.Length )
+         {
+            for( int i = 0; i < patterns.Length; i++ ) result.Add( i );
+            return result;
+         }
+
+         var stamp = _indexStamp;
+         int mark = ++_indexStampCounter;
+         if( mark == int.MaxValue )
+         {
+            Array.Clear( stamp, 0, stamp.Length );
+            _indexStampCounter = mark = 1;
+         }
+
+         for( int i = 0; i < _unindexedPatterns.Count; i++ )
+         {
+            int idx = _unindexedPatterns[ i ];
+            stamp[ idx ] = mark;
+            result.Add( idx );
+         }
+
+         for( int pos = 0; pos + 2 < candidate.Length; pos++ )
+         {
+            List<int> list;
+            if( !_trigramIndex.TryGetValue( Trigram( candidate, pos ), out list ) )
+            {
+               continue;
+            }
+
+            for( int j = 0; j < list.Count; j++ )
+            {
+               int idx = list[ j ];
+               if( stamp[ idx ] != mark )
+               {
+                  stamp[ idx ] = mark;
+                  result.Add( idx );
+               }
+            }
+         }
+
+         result.Sort();
+         return result;
       }
 
       private static readonly Regex CodeTagRegex = new Regex( @"<code=[^>]*>", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase );
@@ -296,11 +393,13 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             }
 
             var sb = new StringBuilder();
+            bool spanHasLetter = false;
             for( int j = i; j < n && j - i < MaxSpanTokens; j++ )
             {
                if( j > i ) sb.Append( ' ' );
                sb.Append( tokens[ j ].Text );
-               if( !HasLetter( sb.ToString() ) ) continue;
+               if( !spanHasLetter ) spanHasLetter = HasLetter( tokens[ j ].Text );
+               if( !spanHasLetter ) continue;
                if( TryTranslatePiece( sb.ToString(), out var tr ) && cost[ i ] + 2 < cost[ j + 1 ] )
                {
                   cost[ j + 1 ] = cost[ i ] + 2;
@@ -492,11 +591,94 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          public Dictionary<string, string> Fuzzy = new Dictionary<string, string>( StringComparer.Ordinal );
       }
 
+      private static readonly Dictionary<string, int> _rejectedReported = new Dictionary<string, int>( StringComparer.OrdinalIgnoreCase );
+
       private static Source[] _sources = new Source[ 0 ];
+
+      private static bool _fullRebuildNeeded = true;
+      private static Dictionary<string, Pattern> _mergedPatterns = new Dictionary<string, Pattern>( StringComparer.Ordinal );
+      private static readonly List<PendingPattern> _pendingPatterns = new List<PendingPattern>();
+      private static readonly List<PendingFuzzy> _pendingFuzzy = new List<PendingFuzzy>();
+
+      private struct PendingPattern
+      {
+         public Source Owner;
+         public string Key;
+         public Pattern Pattern;
+      }
+
+      private struct PendingFuzzy
+      {
+         public Source Owner;
+         public string Key;
+         public string Value;
+      }
+
       private static string _sourcesAuto;
       private static string _sourcesPattern;
       private static int _lastGlobalCheckTick;
       private static bool _everChecked;
+
+      private static readonly List<FileSystemWatcher> _watchers = new List<FileSystemWatcher>();
+      private static volatile bool _watcherDirty;
+      private static int _watcherDirtyTick;
+      private static bool _watchingActive;
+      private const int WatcherSettleMs = 100;
+
+      private static void OnWatchedFileChanged( object sender, FileSystemEventArgs e )
+      {
+         _watcherDirtyTick = Environment.TickCount;
+         _watcherDirty = true;
+      }
+
+      private static void OnWatchedFileRenamed( object sender, RenamedEventArgs e )
+      {
+         _watcherDirtyTick = Environment.TickCount;
+         _watcherDirty = true;
+      }
+
+      private static void RestartWatchers( string autoPath, string patPath )
+      {
+         lock( _watchers )
+         {
+            foreach( var w in _watchers )
+            {
+               try { w.EnableRaisingEvents = false; w.Dispose(); } catch { }
+            }
+            _watchers.Clear();
+            _watchingActive = false;
+
+            try
+            {
+               bool any = false;
+               foreach( var path in new[] { autoPath, patPath } )
+               {
+                  if( string.IsNullOrEmpty( path ) ) continue;
+                  var full = System.IO.Path.GetFullPath( path );
+                  var dir = System.IO.Path.GetDirectoryName( full );
+                  if( string.IsNullOrEmpty( dir ) || !Directory.Exists( dir ) ) continue;
+
+                  var w = new FileSystemWatcher( dir, System.IO.Path.GetFileName( full ) )
+                  {
+                     NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName | NotifyFilters.CreationTime,
+                  };
+                  w.Changed += OnWatchedFileChanged;
+                  w.Created += OnWatchedFileChanged;
+                  w.Deleted += OnWatchedFileChanged;
+                  w.Renamed += OnWatchedFileRenamed;
+                  w.EnableRaisingEvents = true;
+                  _watchers.Add( w );
+                  any = true;
+               }
+               _watchingActive = any;
+            }
+            catch( Exception e )
+            {
+               _watchingActive = false;
+               XuaLogger.AutoTranslator.Warn( e, "SdwPatternTranslator: could not start file watching; falling back to fast polling." );
+            }
+         }
+      }
 
       private static void RefreshIfNeeded()
       {
@@ -507,12 +689,20 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          if( _everChecked
             && string.Equals( autoPath, _sourcesAuto, StringComparison.OrdinalIgnoreCase )
             && string.Equals( patPath, _sourcesPattern, StringComparison.OrdinalIgnoreCase )
-            && unchecked( now - _lastGlobalCheckTick ) < 1000 )
+            && unchecked( now - _lastGlobalCheckTick ) < 250
+            && !( _watcherDirty && unchecked( now - _watcherDirtyTick ) >= WatcherSettleMs ) )
          {
             return;
          }
          _lastGlobalCheckTick = now;
          _everChecked = true;
+
+         bool forceCheck = false;
+         if( _watcherDirty && unchecked( now - _watcherDirtyTick ) >= WatcherSettleMs )
+         {
+            _watcherDirty = false;
+            forceCheck = true;
+         }
 
          if( !string.Equals( autoPath, _sourcesAuto, StringComparison.OrdinalIgnoreCase )
             || !string.Equals( patPath, _sourcesPattern, StringComparison.OrdinalIgnoreCase ) )
@@ -520,22 +710,24 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             _sourcesAuto = autoPath;
             _sourcesPattern = patPath;
 
+            RestartWatchers( autoPath, patPath );
             var list = new List<Source>();
             if( !string.IsNullOrEmpty( autoPath ) )
             {
-               list.Add( new Source { Path = autoPath, Appendable = true, MinIntervalMs = 10000 } );
+               list.Add( new Source { Path = autoPath, Appendable = true, MinIntervalMs = _watchingActive ? 10000 : 2000 } );
             }
             if( !string.IsNullOrEmpty( patPath ) && !string.Equals( patPath, autoPath, StringComparison.OrdinalIgnoreCase ) )
             {
-               list.Add( new Source { Path = patPath, Appendable = false, MinIntervalMs = 2000 } );
+               list.Add( new Source { Path = patPath, Appendable = false, MinIntervalMs = _watchingActive ? 5000 : 500 } );
             }
             _sources = list.ToArray();
+            _fullRebuildNeeded = true;
          }
 
          bool changed = false;
          foreach( var src in _sources )
          {
-            if( src.Checked && unchecked( now - src.LastCheckTick ) < src.MinIntervalMs )
+            if( !forceCheck && src.Checked && unchecked( now - src.LastCheckTick ) < src.MinIntervalMs )
             {
                continue;
             }
@@ -565,6 +757,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          {
             if( src.Patterns.Count > 0 || src.Fuzzy.Count > 0 || src.Offset != 0 )
             {
+               _fullRebuildNeeded = true;
                src.Patterns.Clear(); src.Fuzzy.Clear();
                src.Offset = 0;
                src.WriteTimeUtc = DateTime.MinValue;
@@ -586,6 +779,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             bool full = length < src.Offset;
             if( full )
             {
+               _fullRebuildNeeded = true;
                src.Patterns.Clear(); src.Fuzzy.Clear();
                src.Offset = 0;
             }
@@ -608,6 +802,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return false;
             }
 
+            _fullRebuildNeeded = true;
             src.Patterns.Clear(); src.Fuzzy.Clear();
             ReadRange( src, 0, completeLinesOnly: false, out _ );
             src.Offset = length;
@@ -657,6 +852,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          int skipBom = ( offset == 0 && usable >= 3 && buffer[ 0 ] == 0xEF && buffer[ 1 ] == 0xBB && buffer[ 2 ] == 0xBF ) ? 3 : 0;
          var text = Encoding.UTF8.GetString( buffer, skipBom, usable - skipBom );
 
+         int rejectedLines = 0;
+         var rejectedExamples = new List<string>();
+
          foreach( var rawLine in text.Split( new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries ) )
          {
             if( rawLine.Length < 3 || rawLine.StartsWith( "//", StringComparison.Ordinal ) )
@@ -694,6 +892,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                if( fk.Length >= MinSegmentFuzzyLength && !src.Fuzzy.ContainsKey( fk ) )
                {
                   src.Fuzzy[ fk ] = value;
+                  _pendingFuzzy.Add( new PendingFuzzy { Owner = src, Key = fk, Value = value } );
                }
                continue;
             }
@@ -701,19 +900,40 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             var reject = ValidateLine( key, value );
             if( reject != null )
             {
-               XuaLogger.AutoTranslator.Warn( "SdwPatternTranslator: ignored line (" + reject + "): " + key + "=" + value );
+               rejectedLines++;
+               if( rejectedExamples.Count < 3 )
+               {
+                  rejectedExamples.Add( key + "  [" + reject + "]" );
+               }
+               if( Settings.EnableSdwDiagnostics )
+               {
+                  XuaLogger.AutoTranslator.Warn( "SdwPatternTranslator: ignored line (" + reject + "): " + key + "=" + value );
+               }
                continue;
             }
 
             try
             {
-               src.Patterns[ key ] = Compile( key, value );
+               var compiled = Compile( key, value );
+               src.Patterns[ key ] = compiled;
+               _pendingPatterns.Add( new PendingPattern { Owner = src, Key = key, Pattern = compiled } );
                parsedCount++;
             }
             catch( Exception e )
             {
                XuaLogger.AutoTranslator.Warn( e, "SdwPatternTranslator: could not compile pattern: " + key );
             }
+         }
+
+         int lastReported;
+         bool reportRejected = rejectedLines > 0
+            && ( !_rejectedReported.TryGetValue( src.Path, out lastReported ) || lastReported != rejectedLines );
+         _rejectedReported[ src.Path ] = rejectedLines;
+         if( reportRejected )
+         {
+            XuaLogger.AutoTranslator.Info( "SdwPatternTranslator: ignored " + rejectedLines + " line(s) in '" + System.IO.Path.GetFileName( src.Path )
+               + "' (too little fixed text / invalid placeholders). Examples: " + string.Join( "; ", rejectedExamples.ToArray() )
+               + ". Set [Behaviour] EnableSdwDiagnostics=true to list every line." );
          }
 
          parsedCount += src.Fuzzy.Count - fuzzyBefore;
@@ -761,8 +981,102 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return null;
       }
 
+      private static bool IsOverriddenByLaterSource( Source owner, string key, bool fuzzy )
+      {
+         bool afterOwner = false;
+         foreach( var src in _sources )
+         {
+            if( ReferenceEquals( src, owner ) )
+            {
+               afterOwner = true;
+               continue;
+            }
+            if( afterOwner && ( fuzzy ? src.Fuzzy.ContainsKey( key ) : src.Patterns.ContainsKey( key ) ) )
+            {
+               return true;
+            }
+         }
+         return false;
+      }
+
+      private static void RemoveNegativeHits( Dictionary<string, Hit> cache )
+      {
+         List<string> toRemove = null;
+         foreach( var kv in cache )
+         {
+            if( kv.Value == null || kv.Value.Result == null )
+            {
+               if( toRemove == null ) toRemove = new List<string>();
+               toRemove.Add( kv.Key );
+            }
+         }
+         if( toRemove != null )
+         {
+            foreach( var k in toRemove ) cache.Remove( k );
+         }
+      }
+
+      private static void RemoveNegativeCompositions( Dictionary<string, string> cache )
+      {
+         List<string> toRemove = null;
+         foreach( var kv in cache )
+         {
+            if( kv.Value == null )
+            {
+               if( toRemove == null ) toRemove = new List<string>();
+               toRemove.Add( kv.Key );
+            }
+         }
+         if( toRemove != null )
+         {
+            foreach( var k in toRemove ) cache.Remove( k );
+         }
+      }
+
       private static void Rebuild()
       {
+         if( !_fullRebuildNeeded )
+         {
+            if( _pendingPatterns.Count == 0 && _pendingFuzzy.Count == 0 )
+            {
+               return;
+            }
+
+            foreach( var p in _pendingPatterns )
+            {
+               if( !IsOverriddenByLaterSource( p.Owner, p.Key, false ) )
+               {
+                  _mergedPatterns[ p.Key ] = p.Pattern;
+               }
+            }
+            foreach( var f in _pendingFuzzy )
+            {
+               if( !IsOverriddenByLaterSource( f.Owner, f.Key, true ) )
+               {
+                  _fuzzy[ f.Key ] = f.Value;
+               }
+            }
+            bool patternsAdded = _pendingPatterns.Count > 0;
+            _pendingPatterns.Clear();
+            _pendingFuzzy.Clear();
+
+            if( patternsAdded )
+            {
+               var incrementalList = new List<Pattern>( _mergedPatterns.Values );
+               incrementalList.Sort( ( a, b ) => b.LiteralLength.CompareTo( a.LiteralLength ) );
+               _patterns = incrementalList.ToArray();
+               BuildPatternIndex( _patterns );
+            }
+
+            RemoveNegativeHits( _cache );
+            RemoveNegativeCompositions( _composeCache );
+            return;
+         }
+
+         _fullRebuildNeeded = false;
+         _pendingPatterns.Clear();
+         _pendingFuzzy.Clear();
+
          var merged = new Dictionary<string, Pattern>( StringComparer.Ordinal );
          foreach( var src in _sources )
          {
@@ -771,6 +1085,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                merged[ kv.Key ] = kv.Value;
             }
          }
+         _mergedPatterns = merged;
 
          var fuzzy = new Dictionary<string, string>( StringComparer.Ordinal );
          foreach( var src in _sources )
@@ -786,6 +1101,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          var list = new List<Pattern>( merged.Values );
          list.Sort( ( a, b ) => b.LiteralLength.CompareTo( a.LiteralLength ) );
          _patterns = list.ToArray();
+         BuildPatternIndex( _patterns );
          _cache.Clear();
       }
 

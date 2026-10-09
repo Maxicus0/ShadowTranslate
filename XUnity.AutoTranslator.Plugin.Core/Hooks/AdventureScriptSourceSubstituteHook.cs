@@ -169,74 +169,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static Dictionary<string, Type> ResolveTypesByName( params string[] simpleNames )
       {
-         var result = new Dictionary<string, Type>();
-         var remaining = new HashSet<string>( simpleNames );
-
-         foreach( var name in simpleNames )
-         {
-            Type direct = Type.GetType( name, false );
-            if( direct != null )
-            {
-               result[ name ] = direct;
-               remaining.Remove( name );
-            }
-         }
-
-         if( remaining.Count == 0 )
-         {
-            return result;
-         }
-
-         foreach( var assembly in AppDomain.CurrentDomain.GetAssemblies() )
-         {
-            if( remaining.Count == 0 )
-            {
-               break;
-            }
-
-            Type[] types;
-            try
-            {
-               types = assembly.GetTypes();
-            }
-            catch( ReflectionTypeLoadException ex )
-            {
-               var loaded = new List<Type>();
-               foreach( var t in ex.Types )
-               {
-                  if( t != null )
-                  {
-                     loaded.Add( t );
-                  }
-               }
-               types = loaded.ToArray();
-            }
-            catch
-            {
-               continue;
-            }
-
-            foreach( var type in types )
-            {
-               if( type == null )
-               {
-                  continue;
-               }
-
-               if( remaining.Contains( type.FullName ) )
-               {
-                  result[ type.FullName ] = type;
-                  remaining.Remove( type.FullName );
-               }
-               else if( remaining.Contains( type.Name ) )
-               {
-                  result[ type.Name ] = type;
-                  remaining.Remove( type.Name );
-               }
-            }
-         }
-
-         return result;
+         return XUnity.AutoTranslator.Plugin.Core.Utilities.TypeLookup.ResolveTypesByName( simpleNames );
       }
    }
 }

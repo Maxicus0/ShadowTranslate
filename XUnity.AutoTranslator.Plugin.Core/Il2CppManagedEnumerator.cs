@@ -23,6 +23,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
       }
 
       private readonly IEnumerator _enumerator;
+      private string _profileKey;
 
       public Il2CppManagedEnumerator( IntPtr ptr )
          : base( ptr )
@@ -48,7 +49,18 @@ namespace XUnity.AutoTranslator.Plugin.Core
          };
       }
 
-      public bool MoveNext() => _enumerator.MoveNext();
+      public bool MoveNext()
+      {
+         if( _profileKey == null )
+         {
+            var n = _enumerator.GetType().Name;
+            _profileKey = "Co:" + ( n.StartsWith( "<" ) && n.IndexOf( '>' ) > 0 ? n.Substring( 1, n.IndexOf( '>' ) - 1 ) : n );
+         }
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( _profileKey ) )
+         {
+            return _enumerator.MoveNext();
+         }
+      }
 
       public void Reset() => _enumerator.Reset();
    }

@@ -128,6 +128,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             MenuCharacterMessageBoxFontFixHook.Apply();
 
             AdventureScriptSourceSubstituteHook.Apply();
+
+            SdwPatternTranslator.Preload();
+            StoryTextPreTranslateHook.Preload();
          }
          catch( Exception e )
          {
@@ -154,11 +157,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          try
          {
-            NativeFontReplacements.Initialize();
+            XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Start();
          }
          catch( Exception e )
          {
-            XuaLogger.AutoTranslator.Error( e, "An error occurred while registering native font replacements." );
+            XuaLogger.AutoTranslator.Warn( e, "An error occurred while starting the hitch profiler." );
          }
 
       }

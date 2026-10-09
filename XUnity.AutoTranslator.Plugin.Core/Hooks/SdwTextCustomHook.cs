@@ -1,6 +1,7 @@
 ﻿using System;
 using XUnity.AutoTranslator.Plugin.Core.Configuration;
 using XUnity.AutoTranslator.Plugin.Core.Extensions;
+using XUnity.Common.Constants;
 using XUnity.Common.Logging;
 using XUnity.Common.Utilities;
 using XUnity.Common.Extensions;
@@ -14,9 +15,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       private static HarmonyLib.Harmony _harmony;
       private static bool _applied;
       private static bool _characterTablesPatched;
-
-      private static System.Reflection.MethodInfo _updateTextMethod;
-      private static System.Reflection.MethodInfo _setTextMethod;
 
       private sealed class GameEntryPointMarker
       {
@@ -47,11 +45,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return false;
          }
 
-         if( IsForceBypassedPath( instance ) )
-         {
-            return false;
-         }
-
          var marker = instance.GetExtensionData<SdwTextInstanceMarker>();
          if( marker == null )
          {
@@ -59,14 +52,43 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
 
          var currentId = GetUnityInstanceId( instance );
-         var isMatch = marker.InstanceId == currentId;
-
-         if( isMatch )
+         if( marker.InstanceId != currentId )
          {
-            XuaLogger.AutoTranslator.Debug( $"[SDWTEXT-MARKER-CHECK] '{instance.GetPath()}' matched known-SdwText marker (storedId={marker.InstanceId}, currentId={currentId})." );
+            return false;
          }
 
-         return isMatch;
+         return !IsForceBypassedPathCached( instance, currentId );
+      }
+
+      private static int _bypassCacheFrame = -1;
+      private static readonly System.Collections.Generic.Dictionary<int, bool> _bypassCache = new System.Collections.Generic.Dictionary<int, bool>();
+
+      private static bool IsForceBypassedPathCached( object instance, int instanceId )
+      {
+         var groups = Settings.ForceBypassedSdwTextPaths;
+         if( groups == null || groups.Length == 0 )
+         {
+            return false;
+         }
+
+         int frame = UnityEngine.Time.frameCount;
+         if( frame != _bypassCacheFrame )
+         {
+            _bypassCacheFrame = frame;
+            _bypassCache.Clear();
+         }
+
+         if( instanceId != 0 && _bypassCache.TryGetValue( instanceId, out var cached ) )
+         {
+            return cached;
+         }
+
+         var result = IsForceBypassedPath( instance );
+         if( instanceId != 0 )
+         {
+            _bypassCache[ instanceId ] = result;
+         }
+         return result;
       }
 
       public static bool ShouldSkipOnEnableDispatch( object instance )
@@ -90,7 +112,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return false;
             }
 
-            return string.Equals( StripWhitespace( current ), StripWhitespace( info.TranslatedText ), StringComparison.Ordinal );
+            return EqualsIgnoringWhitespace( current, info.TranslatedText );
          }
          catch
          {
@@ -112,7 +134,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return false;
             }
 
-            return string.Equals( StripWhitespace( text ), StripWhitespace( info.TranslatedText ), StringComparison.Ordinal );
+            return EqualsIgnoringWhitespace( text, info.TranslatedText );
          }
          catch
          {
@@ -176,7 +198,10 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                patternSource = "pattern '" + src + "' (UI.Text)";
             }
 
-            XuaLogger.AutoTranslator.Debug( $"[SDWPATTERN] '{text.Replace( '\n', ' ' )}' -> '{translated.Replace( '\n', ' ' )}'  via {patternSource}  at '{ui.GetPath()}'" );
+            if( Settings.EnableSdwDiagnostics )
+            {
+               XuaLogger.AutoTranslator.Debug( $"[SDWPATTERN] '{text.Replace( '\n', ' ' )}' -> '{translated.Replace( '\n', ' ' )}'  via {patternSource}  at '{ui.GetPath()}'" );
+            }
 
             if( info != null )
             {
@@ -207,6 +232,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static void LogPatternMiss( string text, object ui )
       {
+         if( !Settings.EnableSdwDiagnostics )
+         {
+            return;
+         }
+
          try
          {
             if( text.Length < 2 || !ContainsLetter( text ) || _loggedMisses.Count > 500 || !_loggedMisses.Add( text ) )
@@ -230,16 +260,50 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
+      private const byte UnityTypeOther = 0;
+      private const byte UnityTypeSdwText = 1;
+      private const byte UnityTypePlainUiText = 2;
+
+      private static readonly System.Collections.Generic.Dictionary<System.IntPtr, byte> _unityTypeKinds =
+         new System.Collections.Generic.Dictionary<System.IntPtr, byte>();
+
+      private static byte GetUnityTypeKind( object ui )
+      {
+         var type = ui.GetUnityType();
+         if( type == null )
+         {
+            return UnityTypeOther;
+         }
+
+         var key = type.Pointer;
+         if( !_unityTypeKinds.TryGetValue( key, out var kind ) )
+         {
+            var name = type.FullName;
+            if( name != null && ( name == "SdwText" || name.EndsWith( ".SdwText", StringComparison.Ordinal ) ) )
+            {
+               kind = UnityTypeSdwText;
+            }
+            else if( name == "UnityEngine.UI.Text" )
+            {
+               kind = UnityTypePlainUiText;
+            }
+            else
+            {
+               kind = UnityTypeOther;
+            }
+            _unityTypeKinds[ key ] = kind;
+         }
+         return kind;
+      }
+
       private static bool IsPlainUiTextComponent( object ui )
       {
-         var name = ui.GetUnityType()?.FullName;
-         return name == "UnityEngine.UI.Text";
+         return GetUnityTypeKind( ui ) == UnityTypePlainUiText;
       }
 
       private static bool IsSdwTextComponent( object ui )
       {
-         var name = ui.GetUnityType()?.FullName;
-         if( name != null && ( name == "SdwText" || name.EndsWith( ".SdwText", StringComparison.Ordinal ) ) )
+         if( GetUnityTypeKind( ui ) == UnityTypeSdwText )
          {
             return true;
          }
@@ -247,17 +311,26 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return IsKnownSdwTextInstance( ui );
       }
 
-      private static string StripWhitespace( string value )
+      private static bool EqualsIgnoringWhitespace( string a, string b )
       {
-         var sb = new System.Text.StringBuilder( value.Length );
-         foreach( var c in value )
+         if( ReferenceEquals( a, b ) ) return true;
+         if( a == null || b == null ) return false;
+
+         int i = 0, j = 0;
+         while( true )
          {
-            if( !char.IsWhiteSpace( c ) )
+            while( i < a.Length && char.IsWhiteSpace( a[ i ] ) ) i++;
+            while( j < b.Length && char.IsWhiteSpace( b[ j ] ) ) j++;
+
+            if( i >= a.Length || j >= b.Length )
             {
-               sb.Append( c );
+               return i >= a.Length && j >= b.Length;
             }
+
+            if( a[ i ] != b[ j ] ) return false;
+            i++;
+            j++;
          }
-         return sb.ToString();
       }
 
       private static bool IsForceBypassedPath( object instance )
@@ -343,6 +416,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             PatchCharacterTables( sdwTextType );
 
             PatchGetTextWidth( sdwTextType );
+            PatchGetFormatedText( sdwTextType );
 
             _applied = true;
          }
@@ -352,77 +426,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
-      private static System.Collections.Generic.Dictionary<string, System.Type> ResolveTypesByName(
-         params string[] simpleNames )
+      private static System.Collections.Generic.Dictionary<string, System.Type> ResolveTypesByName( params string[] simpleNames )
       {
-         var result = new System.Collections.Generic.Dictionary<string, System.Type>();
-         var remaining = new System.Collections.Generic.HashSet<string>( simpleNames );
-
-         foreach( var name in simpleNames )
-         {
-            System.Type direct = System.Type.GetType( name, false );
-            if( direct != null )
-            {
-               result[ name ] = direct;
-               remaining.Remove( name );
-            }
-         }
-
-         if( remaining.Count == 0 )
-         {
-            return result;
-         }
-
-         foreach( var assembly in System.AppDomain.CurrentDomain.GetAssemblies() )
-         {
-            if( remaining.Count == 0 )
-            {
-               break;
-            }
-
-            System.Type[] types;
-            try
-            {
-               types = assembly.GetTypes();
-            }
-            catch( System.Reflection.ReflectionTypeLoadException ex )
-            {
-               var loaded = new System.Collections.Generic.List<System.Type>();
-               foreach( var t in ex.Types )
-               {
-                  if( t != null )
-                  {
-                     loaded.Add( t );
-                  }
-               }
-               types = loaded.ToArray();
-            }
-            catch
-            {
-               continue;
-            }
-
-            foreach( var type in types )
-            {
-               if( type == null )
-               {
-                  continue;
-               }
-
-               if( remaining.Contains( type.FullName ) )
-               {
-                  result[ type.FullName ] = type;
-                  remaining.Remove( type.FullName );
-               }
-               else if( remaining.Contains( type.Name ) )
-               {
-                  result[ type.Name ] = type;
-                  remaining.Remove( type.Name );
-               }
-            }
-         }
-
-         return result;
+         return XUnity.AutoTranslator.Plugin.Core.Utilities.TypeLookup.ResolveTypesByName( simpleNames );
       }
 
       private static void PatchSetText( System.Type sdwTextType )
@@ -437,8 +443,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             XuaLogger.AutoTranslator.Warn( "SdwTextCustomHook: SdwText.SetText(string) could not be resolved via reflection." );
             return;
          }
-
-         _setTextMethod = target;
 
          System.Reflection.MethodInfo prefix = typeof( SdwTextCustomHook ).GetMethod(
             nameof( MarkAsSdwTextInstance_Prefix ),
@@ -463,8 +467,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             XuaLogger.AutoTranslator.Warn( "SdwTextCustomHook: SdwText.UpdateText(string) could not be resolved via reflection." );
             return;
          }
-
-         _updateTextMethod = target;
 
          System.Reflection.MethodInfo prefix = typeof( SdwTextCustomHook ).GetMethod(
             nameof( MarkAsSdwTextInstance_Prefix ),
@@ -542,16 +544,29 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static void SetFontSetting_Postfix( object __instance )
       {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "SetFontSetting" ) )
+         {
+            SetFontSettingCore( __instance );
+         }
+      }
+
+      private static void SetFontSettingCore( object __instance )
+      {
          if( __instance == null || AutoTranslationPlugin.Current == null )
          {
             return;
          }
 
+         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
+
          var info = __instance.GetOrCreateTextTranslationInfo();
 
-         XuaLogger.AutoTranslator.Debug(
-            "SdwTextCustomHook.SetFontSetting_Postfix: fired for '" + __instance.GetUnityType()?.FullName
-            + "', info=" + ( info == null ? "null" : "IsTranslated=" + info.IsTranslated ) + "." );
+         if( Settings.EnableSdwDiagnostics )
+         {
+            XuaLogger.AutoTranslator.Debug(
+               "SdwTextCustomHook.SetFontSetting_Postfix: fired for '" + __instance.GetUnityType()?.FullName
+               + "', info=" + ( info == null ? "null" : "IsTranslated=" + info.IsTranslated ) + "." );
+         }
 
          if( info != null && info.IsTranslated )
          {
@@ -559,35 +574,56 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
 
          StoryTextPreTranslateHook.ReapplyStoryFontSize( __instance );
+
+         Fonts.SdwLineSpacingPolicy.Apply( __instance, info );
       }
 
       private static void SetText_Postfix( object __instance )
       {
+         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
          RememberGameEntryPoint( __instance, "SetText" );
          Dispatch( __instance, forceStabilizationReset: false );
       }
 
       private static void UpdateText_Postfix( object __instance )
       {
+         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
          RememberGameEntryPoint( __instance, "UpdateText" );
          Dispatch( __instance, forceStabilizationReset: false );
       }
 
       private static void TextPropertySetter_Postfix( object __instance, string value )
       {
+         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
          Dispatch( __instance, forceStabilizationReset: false );
       }
 
+      private static readonly System.Collections.Generic.Dictionary<System.Type, System.Reflection.PropertyInfo> _cachedTargetProperties =
+         new System.Collections.Generic.Dictionary<System.Type, System.Reflection.PropertyInfo>();
+
       private static void ConnectorOnEnable_Postfix( object __instance )
+      {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.ConnectorOnEnable" ) )
+         {
+            ConnectorOnEnable_PostfixCore( __instance );
+         }
+      }
+
+      private static void ConnectorOnEnable_PostfixCore( object __instance )
       {
          if( __instance == null )
          {
             return;
          }
 
-         System.Reflection.PropertyInfo cachedTargetProperty = __instance.GetType().GetProperty(
-            "CachedTarget",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public );
+         var connectorType = __instance.GetType();
+         if( !_cachedTargetProperties.TryGetValue( connectorType, out var cachedTargetProperty ) )
+         {
+            cachedTargetProperty = connectorType.GetProperty(
+               "CachedTarget",
+               System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public );
+            _cachedTargetProperties[ connectorType ] = cachedTargetProperty;
+         }
 
          if( cachedTargetProperty == null )
          {
@@ -611,6 +647,14 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static void Dispatch( object instance, bool forceStabilizationReset )
       {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.SdwDispatch" ) )
+         {
+            DispatchCore( instance, forceStabilizationReset );
+         }
+      }
+
+      private static void DispatchCore( object instance, bool forceStabilizationReset )
+      {
          if( instance == null )
          {
             return;
@@ -631,7 +675,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return;
          }
 
-         if( !_characterTablesPatched )
+         if( !_characterTablesPatched && !_characterTablesGaveUp )
          {
             PatchCharacterTables( instance.GetType() );
          }
@@ -648,27 +692,46 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          AutoTranslationPlugin.Current.Hook_TextChanged( instance, false );
       }
 
+      private const int MaxCharacterTableAttempts = 10;
+      private const int CharacterTableRetryDelayMs = 3000;
+      private static bool _characterTablesGaveUp;
+      private static int _characterTableAttempts;
+      private static int _characterTableLastAttemptTick;
+
       private static void PatchCharacterTables( System.Type sdwTextType )
       {
-         if( _characterTablesPatched || sdwTextType == null )
+         if( _characterTablesPatched || _characterTablesGaveUp || sdwTextType == null )
          {
             return;
          }
 
+         var now = System.Environment.TickCount;
+         if( _characterTableAttempts > 0 && unchecked( now - _characterTableLastAttemptTick ) < CharacterTableRetryDelayMs )
+         {
+            return;
+         }
+         _characterTableLastAttemptTick = now;
+         _characterTableAttempts++;
+
          try
          {
             bool ok = ExtendCharacterField( sdwTextType, "LatinCharacters", BuildCyrillicLetters() );
-
-            ExtendCharacterField( sdwTextType, "NonLineStartingCharacters", new[] { '»', '—', '…', ')' } );
-            ExtendCharacterField( sdwTextType, "NonLineEndingCharacters", new[] { '«', '(' } );
+            ok &= ExtendCharacterField( sdwTextType, "NonLineStartingCharacters", new[] { '»', '—', '…', ')' } );
+            ok &= ExtendCharacterField( sdwTextType, "NonLineEndingCharacters", new[] { '«', '(' } );
 
             if( ok )
             {
                _characterTablesPatched = true;
             }
+            else if( _characterTableAttempts >= MaxCharacterTableAttempts )
+            {
+               _characterTablesGaveUp = true;
+               XuaLogger.AutoTranslator.Warn( "SdwTextCustomHook: SdwText character tables were not ready after " + MaxCharacterTableAttempts + " attempts; giving up on the Cyrillic table extension." );
+            }
          }
          catch( System.Exception e )
          {
+            _characterTablesGaveUp = true;
             XuaLogger.AutoTranslator.Error( e, "SdwTextCustomHook: Failed to extend SdwText character tables for Cyrillic support." );
          }
       }
@@ -710,7 +773,195 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          XuaLogger.AutoTranslator.Info( "SdwTextCustomHook: patched " + target.DeclaringType?.FullName + "." + target + " (SIZE-TAG WIDTH fix)." );
       }
 
+      private static readonly string[] NoGameWrapPathSuffixes = new string[ 0 ];
+
+      private sealed class LabelCacheEntry
+      {
+         public bool Match;
+         public int Frame;
+      }
+
+      private static readonly System.Collections.Generic.Dictionary<int, LabelCacheEntry> _noGameWrapCache = new System.Collections.Generic.Dictionary<int, LabelCacheEntry>();
+
+      internal static bool IsNoWrapLabel( object ui )
+      {
+         if( NoGameWrapPathSuffixes.Length == 0 )
+         {
+            return false;
+         }
+
+         var component = ui as UnityEngine.Component;
+         if( component == null )
+         {
+            return false;
+         }
+
+         int id = component.GetInstanceID();
+         int frame = UnityEngine.Time.frameCount;
+         if( _noGameWrapCache.TryGetValue( id, out var entry ) && ( entry.Match || frame - entry.Frame < 30 ) )
+         {
+            return entry.Match;
+         }
+
+         bool match = false;
+         var path = component.GetPath();
+         if( path != null )
+         {
+            foreach( var suffix in NoGameWrapPathSuffixes )
+            {
+               if( path.EndsWith( suffix, StringComparison.Ordinal ) )
+               {
+                  match = true;
+                  break;
+               }
+            }
+         }
+
+         if( _noGameWrapCache.Count >= 4096 )
+         {
+            _noGameWrapCache.Clear();
+         }
+         _noGameWrapCache[ id ] = new LabelCacheEntry { Match = match, Frame = frame };
+
+         return match;
+      }
+
+      private static void PatchGetFormatedText( System.Type sdwTextType )
+      {
+         System.Reflection.MethodInfo target = HarmonyLib.AccessTools.Method( sdwTextType, "GetFormatedText", new System.Type[] { typeof( string ) } );
+         if( target == null )
+         {
+            XuaLogger.AutoTranslator.Warn( "SdwTextCustomHook: SdwText.GetFormatedText(string) could not be resolved via reflection." );
+            return;
+         }
+
+         System.Reflection.MethodInfo prefix = typeof( SdwTextCustomHook ).GetMethod(
+            nameof( GetFormatedText_Prefix ),
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic );
+
+         System.Reflection.MethodInfo postfix = typeof( SdwTextCustomHook ).GetMethod(
+            nameof( GetFormatedText_Postfix ),
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic );
+
+         _harmony.Patch( target, prefix: new HarmonyLib.HarmonyMethod( prefix ), postfix: new HarmonyLib.HarmonyMethod( postfix ) );
+         XuaLogger.AutoTranslator.Info( "SdwTextCustomHook: patched " + target.DeclaringType?.FullName + "." + target + " (WRAP-GUARD fix)." );
+      }
+
+      private static bool HasCyrillic( string text )
+      {
+         for( int i = 0; i < text.Length; i++ )
+         {
+            if( text[ i ] >= '\u0400' && text[ i ] <= '\u04FF' )
+            {
+               return true;
+            }
+         }
+         return false;
+      }
+
+      private static float GetRectWidth( UnityEngine.Component component )
+      {
+         var rt = component.GetComponent<UnityEngine.RectTransform>();
+         if( rt == null )
+         {
+            return float.MaxValue;
+         }
+         return rt.rect.width;
+      }
+
+      private static bool GetFormatedText_Prefix( object __instance, ref string msg, ref string __result )
+      {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.GetFormatedText" ) )
+         {
+            return GetFormatedText_PrefixCore( __instance, ref msg, ref __result );
+         }
+      }
+
+      private static bool GetFormatedText_PrefixCore( object __instance, ref string msg, ref string __result )
+      {
+         try
+         {
+            if( string.IsNullOrEmpty( msg ) || !HasCyrillic( msg ) )
+            {
+               return true;
+            }
+
+            var trimmed = msg.Trim( '\n', '\r' );
+            if( trimmed.Length > 0 )
+            {
+               msg = trimmed;
+            }
+
+            var component = __instance as UnityEngine.Component;
+            if( component == null )
+            {
+               return true;
+            }
+
+            if( IsNoWrapLabel( __instance ) || GetRectWidth( component ) <= 1f )
+            {
+               UnityTypes.Text_Properties.HorizontalOverflow?.Set( __instance, 1 );
+               __result = msg;
+               return false;
+            }
+
+            return true;
+         }
+         catch( System.Exception )
+         {
+            return true;
+         }
+      }
+
+      private static void GetFormatedText_Postfix( object __instance, string msg, ref string __result )
+      {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.GetFormatedTextPost" ) )
+         {
+            GetFormatedText_PostfixCore( __instance, msg, ref __result );
+         }
+      }
+
+      private static void GetFormatedText_PostfixCore( object __instance, string msg, ref string __result )
+      {
+         Fonts.SdwLineSpacingPolicy.Apply( __instance );
+
+         try
+         {
+            if( string.IsNullOrEmpty( __result ) || string.IsNullOrEmpty( msg ) || !HasCyrillic( __result ) )
+            {
+               return;
+            }
+
+            var cleaned = __result.Trim( '\n', '\r' );
+            if( cleaned.Length > 0 )
+            {
+               __result = cleaned;
+            }
+
+            if( Settings.EnableSdwDiagnostics )
+            {
+               var c = __instance as UnityEngine.Component;
+               XuaLogger.AutoTranslator.Debug( "[WRAP-DIAG] path='" + ( c == null ? "?" : c.GetPath() )
+                  + "' rectWidth=" + ( c == null ? 0f : GetRectWidth( c ) ).ToString( "0.0" )
+                  + " fontSize=" + UnityTypes.Text_Properties.FontSize?.Get( __instance )
+                  + " lineSpacing=" + UnityTypes.Text_Properties.LineSpacing?.Get( __instance )
+                  + " in=\"" + msg.Replace( "\n", "\\n" ) + "\" out=\"" + __result.Replace( "\n", "\\n" ) + "\"" );
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+      }
+
       private static bool GetTextWidth_Prefix( ref string message )
+      {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.GetTextWidth" ) )
+         {
+            return GetTextWidth_PrefixCore( ref message );
+         }
+      }
+
+      private static bool GetTextWidth_PrefixCore( ref string message )
       {
          if( !string.IsNullOrEmpty( message ) && message.IndexOf( "<size=", System.StringComparison.OrdinalIgnoreCase ) >= 0 )
          {

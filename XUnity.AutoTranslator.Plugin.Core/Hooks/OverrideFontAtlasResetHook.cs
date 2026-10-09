@@ -69,8 +69,13 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       {
          try
          {
+            if( string.IsNullOrEmpty( Settings.OverrideFont ) ) return;
+
             FontCache.ClearOverrideFonts();
-            XuaLogger.AutoTranslator.Debug( "OverrideFontAtlasResetHook: Cleared override font cache (" + reason + ")." );
+            if( Settings.EnableSdwDiagnostics )
+            {
+               XuaLogger.AutoTranslator.Debug( "OverrideFontAtlasResetHook: Cleared override font cache (" + reason + ")." );
+            }
          }
          catch( Exception e )
          {

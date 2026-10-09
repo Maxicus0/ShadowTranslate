@@ -136,6 +136,10 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
          bool anyChanges;
          var input = new FileInfo( Settings.AutoTranslationsFilePath );
+         if( !input.Exists )
+         {
+            return;
+         }
 
          using var outputStream = new MemoryStream();
 

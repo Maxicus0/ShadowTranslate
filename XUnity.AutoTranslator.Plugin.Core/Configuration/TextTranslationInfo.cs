@@ -34,13 +34,13 @@ namespace XUnity.AutoTranslator.Plugin.Core
       private bool _hasCheckedTypeWriter;
       private MonoBehaviour _typewriter;
       private float? _alteredLineSpacing;
+
+      internal bool HasLineSpacingOverride => _alteredLineSpacing.HasValue;
       private int? _alteredFontSize;
 
-      private Font _autoLineSpacingFont;
-      private int _autoLineSpacingFontSize;
-      private float? _autoLineSpacingMultiplier;
-      private float _autoLineSpacingBaselineValue;
-      private float? _autoAppliedLineSpacing;
+
+      private int _labelFitBaseSize;
+      private int _labelFitAppliedSize;
 
       private bool _initialized = false;
       private HashSet<string> _redirectedTranslations;
@@ -112,6 +112,10 @@ namespace XUnity.AutoTranslator.Plugin.Core
          }
       }
 
+      private string _prewarmedText;
+      private int _prewarmedSize;
+      private int _prewarmedFontId;
+
       private static readonly WeakDictionary<Material, Material> _FontMaterialCopies = new WeakDictionary<Material, Material>();
 
       public void ChangeFont( object ui )
@@ -121,11 +125,6 @@ namespace XUnity.AutoTranslator.Plugin.Core
          Hooks.MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( ui );
 
          _changeFontGeneration++;
-
-         XuaLogger.AutoTranslator.Debug(
-            "TextTranslationInfo.ChangeFont: called for '" + ui.GetUnityType()?.FullName
-            + "', IsTranslated=" + IsTranslated
-            + ", TranslatedText.Length=" + ( TranslatedText?.Length ?? -1 ) );
 
          if( !IsTranslated )
          {
@@ -171,18 +170,24 @@ namespace XUnity.AutoTranslator.Plugin.Core
                {
                   if( !UnityObjectReferenceComparer.Default.Equals( replacementFont, previousFont ) )
                   {
-                     XuaLogger.AutoTranslator.Debug(
-                        "TextTranslationInfo.ChangeFont: Text-branch swapping to native replacement font '" + replacementFont.name
-                        + "' (id=" + replacementFont.GetInstanceID() + ", bundleReplacement=" + FontCache.IsNativeReplacementBundleFont( replacementFont )
-                        + ") at size=" + fontSize + " (native font '" + nativeFont.name + "', id=" + nativeFont.GetInstanceID() + ", previous id=" + previousFont.GetInstanceID() + ")." );
-
-                     Text_fontProperty.Set( ui, replacementFont );
-                     _unfont = obj =>
+                     if( Settings.EnableSdwDiagnostics )
                      {
-                        Text_fontProperty.Set( obj, nativeFont );
-                     };
+                        XuaLogger.AutoTranslator.Debug(
+                           "TextTranslationInfo.ChangeFont: Text-branch swapping to native replacement font '" + replacementFont.name
+                           + "' (id=" + replacementFont.GetInstanceID() + ", bundleReplacement=" + FontCache.IsNativeReplacementBundleFont( replacementFont )
+                           + ") at size=" + fontSize + " (native font '" + nativeFont.name + "', id=" + nativeFont.GetInstanceID() + ", previous id=" + previousFont.GetInstanceID() + ")." );
+                     }
 
-                     ui.SetAllDirtyEx();
+                     using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "FontSwap" ) )
+                     {
+                        Text_fontProperty.Set( ui, replacementFont );
+                        _unfont = obj =>
+                        {
+                           Text_fontProperty.Set( obj, nativeFont );
+                        };
+
+                        ui.SetAllDirtyEx();
+                     }
 
                      LogAtlasDiagnostics( ui, "swap-to-replacement", replacementFont, nativeFont );
                      ScheduleDelayedFontVerification( ui, replacementFont, "post-swap-to-replacement" );
@@ -213,39 +218,49 @@ namespace XUnity.AutoTranslator.Plugin.Core
                      XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to read back/verify the replacement font assignment." );
                   }
 
+                  int prewarmFontId = replacementFont.GetInstanceID();
+
+                  int prewarmSize = fontSize;
                   try
                   {
-                     int componentFontSize = 0;
+                     var componentSizeObj = UnityTypes.Text_Properties.FontSize?.Get( ui );
+                     if( componentSizeObj is int componentSize && componentSize > 0 )
+                     {
+                        prewarmSize = componentSize;
+                     }
+                  }
+                  catch( Exception )
+                  {
+                  }
+
+                  if( !string.Equals( _prewarmedText, TranslatedText, StringComparison.Ordinal )
+                     || _prewarmedSize != prewarmSize || _prewarmedFontId != prewarmFontId )
+                  {
                      try
                      {
-                        var cs = (int?)UnityTypes.Text_Properties.FontSize?.Get( ui );
-                        componentFontSize = cs ?? 0;
+                        using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "RequestGlyphs" ) )
+                        {
+                           if( Settings.EnableCyrillicSpacingFix )
+                           {
+                              Hooks.NativeFontCyrillicSpacingFixHook.PrewarmForSize( replacementFont, prewarmSize, TranslatedText );
+                           }
+                           else
+                           {
+                              replacementFont.RequestCharactersInTexture( TranslatedText, prewarmSize );
+                           }
+                        }
+                        _prewarmedText = TranslatedText;
+                        _prewarmedSize = prewarmSize;
+                        _prewarmedFontId = prewarmFontId;
                      }
-                     catch( Exception )
+                     catch( Exception e )
                      {
-                        componentFontSize = 0;
-                     }
-
-                     if( componentFontSize > 0 && componentFontSize != fontSize )
-                     {
-                        Hooks.NativeFontCyrillicSpacingFixHook.PrewarmForSize( replacementFont, componentFontSize, TranslatedText );
+                        XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to proactively request/fix characters against the native replacement font." );
                      }
                   }
-                  catch( Exception e )
-                  {
-                     XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to pre-bake glyphs at the component's real font size." );
-                  }
 
-                  try
-                  {
-                     replacementFont.RequestCharactersInTexture( TranslatedText, fontSize );
-                  }
-                  catch( Exception e )
-                  {
-                     XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to proactively request/fix characters against the native replacement font." );
-                  }
 
-                  TryApplyAutoLineSpacing( ui, replacementFont, fontSize, TranslatedText );
+                  SdwLineSpacingPolicy.Apply( ui, this );
 
                   LogRussianTextRender( ui, "native-replacement", replacementFont, nativeFont );
                }
@@ -290,7 +305,6 @@ namespace XUnity.AutoTranslator.Plugin.Core
                      XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to synchronously apply/refresh the native-font Cyrillic spacing correction." );
                   }
 
-                  TryApplyAutoLineSpacing( ui, nativeFont, fontSize, TranslatedText );
 
                   LogRussianTextRender( ui, "no-replacement-kept-native", nativeFont, nativeFont );
                }
@@ -338,7 +352,6 @@ namespace XUnity.AutoTranslator.Plugin.Core
                   XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to proactively request/fix characters against the override font." );
                }
 
-               TryApplyAutoLineSpacing( ui, newFont, fontSize, TranslatedText );
             }
             else
             {
@@ -505,6 +518,8 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private static void LogAtlasDiagnostics( object ui, string phase, Font activeFont, Font nativeFont )
       {
+         if( !Settings.EnableSdwDiagnostics ) return;
+
          try
          {
             var component = ui as Component;
@@ -565,6 +580,8 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private static void LogAndProbeMeshEffectSiblings( object ui, string phase )
       {
+         if( !Settings.EnableSdwDiagnostics ) return;
+
          try
          {
             var component = ui as Component;
@@ -668,6 +685,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void LogRussianTextRender( object ui, string outcome, string appliedFontName, string nativeFontName, bool? liveHasCyrillicGlyph = null, bool? faceVerified = null, string actualResolvedFace = null, bool? osEnumerable = null, bool? fingerprintMatches = null, float? expectedAdvancePx = null, float? measuredAdvancePx = null )
       {
+         if( !Settings.EnableSdwDiagnostics ) return;
          try
          {
             var text = TranslatedText;
@@ -718,6 +736,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void LogRussianTextRender( object ui, string outcome, Font appliedFont, Font nativeFont )
       {
+         if( !Settings.EnableSdwDiagnostics ) return;
          bool? liveHasCyrillicGlyph = null;
          bool? faceVerified = null;
          string actualResolvedFace = null;
@@ -752,76 +771,98 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void LogRussianTextRender( object ui, string outcome, UnityEngine.Object appliedFontAsset, UnityEngine.Object nativeFontAsset )
       {
+         if( !Settings.EnableSdwDiagnostics ) return;
          LogRussianTextRender( ui, outcome, appliedFontAsset?.name, nativeFontAsset?.name, liveHasCyrillicGlyph: null, faceVerified: null, actualResolvedFace: null, osEnumerable: null );
       }
 
-      private void TryApplyAutoLineSpacing( object ui, Font font, int fontSize, string translatedText )
+      private string _lastLabelFitLog;
+
+      private void TryFitLabelToRect( object ui )
       {
-         if( !Settings.AutoCalculateLineSpacing )
+         if( !FitLabelCore( ui ) ) return;
+
+         try
          {
-            return;
+            CoroutineHelper.Start( FitLabelNextFrame( ui ) );
          }
-
-         if( ui == null || font == null || fontSize <= 0 )
+         catch( Exception )
          {
-            return;
          }
+      }
 
-         var LineSpacingProperty = UnityTypes.Text_Properties.LineSpacing;
-         if( LineSpacingProperty == null )
+      private IEnumerator FitLabelNextFrame( object ui )
+      {
+         yield return null;
+
+         var component = ui as Component;
+         if( component != null )
          {
-            return;
+            FitLabelCore( ui );
          }
+      }
 
-         bool fontOrSizeChanged = _autoLineSpacingFont == null
-            || !UnityObjectReferenceComparer.Default.Equals( _autoLineSpacingFont, font )
-            || _autoLineSpacingFontSize != fontSize;
-
-         float? multiplier = _autoLineSpacingMultiplier;
-         if( fontOrSizeChanged || !multiplier.HasValue )
+      private bool FitLabelCore( object ui )
+      {
+         try
          {
-            multiplier = AutoLineSpacingHelper.ComputeAutoLineSpacingMultiplier( font, fontSize, translatedText );
-            if( !multiplier.HasValue )
+            if( string.IsNullOrEmpty( TranslatedText ) || TranslatedText.IndexOf( '\n' ) >= 0 ) return false;
+            if( !Hooks.SdwTextCustomHook.IsNoWrapLabel( ui ) ) return false;
+
+            var component = ui as Component;
+            var rectTransform = component != null ? component.GetComponent<RectTransform>() : null;
+            if( rectTransform == null )
             {
-               return;
+               XuaLogger.AutoTranslator.Debug( "[LABEL-FIT] no RectTransform on '" + ui.GetPath() + "'" );
+               return true;
             }
 
-            _autoLineSpacingFont = font;
-            _autoLineSpacingFontSize = fontSize;
-            _autoLineSpacingMultiplier = multiplier;
+            var fontSizeProperty = UnityTypes.Text_Properties.FontSize;
+            var preferredWidthProperty = ui.GetType().CachedProperty( "preferredWidth" );
+            if( fontSizeProperty == null || preferredWidthProperty == null ) return true;
 
-            _autoAppliedLineSpacing = null;
+            int current = (int)fontSizeProperty.Get( ui );
+            int baseSize = current;
+            if( _labelFitAppliedSize > 0 && current == _labelFitAppliedSize && _labelFitBaseSize > 0 )
+            {
+               baseSize = _labelFitBaseSize;
+            }
+            if( baseSize <= 0 ) return true;
+
+            UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+            UnityTypes.Text_Properties.VerticalOverflow?.Set( ui, 1 );
+
+            if( current != baseSize )
+            {
+               fontSizeProperty.Set( ui, baseSize );
+            }
+
+            float width = rectTransform.rect.width;
+            float preferred = (float)preferredWidthProperty.Get( ui );
+            int target = baseSize;
+            if( width > 1f && preferred > width )
+            {
+               target = Mathf.Max( Mathf.FloorToInt( baseSize * width / preferred ), Mathf.CeilToInt( baseSize * 0.6f ) );
+               fontSizeProperty.Set( ui, target );
+            }
+
+            _labelFitBaseSize = baseSize;
+            _labelFitAppliedSize = target;
+
+            var summary = baseSize + ">" + target + "|" + Mathf.RoundToInt( width ) + "|" + Mathf.RoundToInt( preferred );
+            if( summary != _lastLabelFitLog )
+            {
+               _lastLabelFitLog = summary;
+               XuaLogger.AutoTranslator.Debug( "[LABEL-FIT] path='" + ui.GetPath() + "' size " + baseSize + " -> " + target
+                  + " (rectWidth=" + width.ToString( "0.0" ) + ", preferredWidth=" + preferred.ToString( "0.0" ) + ") text=\"" + TranslatedText + "\"" );
+            }
+
+            return true;
          }
-
-         float? currentLineSpacing = (float?)LineSpacingProperty.Get( ui );
-         if( !currentLineSpacing.HasValue )
+         catch( Exception e )
          {
-            return;
+            XuaLogger.AutoTranslator.Debug( "TextTranslationInfo.FitLabelCore failed: " + e.Message );
+            return false;
          }
-
-         if( _autoAppliedLineSpacing.HasValue && Equals( _autoAppliedLineSpacing.Value, currentLineSpacing.Value ) )
-         {
-            return;
-         }
-
-         float baseline = currentLineSpacing.Value;
-         float newLineSpacing = baseline * multiplier.Value;
-
-         if( Mathf.Approximately( newLineSpacing, currentLineSpacing.Value ) )
-         {
-            _autoLineSpacingBaselineValue = baseline;
-            _autoAppliedLineSpacing = currentLineSpacing.Value;
-            return;
-         }
-
-         LineSpacingProperty.Set( ui, newLineSpacing );
-         _autoLineSpacingBaselineValue = baseline;
-         _autoAppliedLineSpacing = newLineSpacing;
-
-         XuaLogger.AutoTranslator.Debug(
-            "TextTranslationInfo.ChangeFont: [AUTO-LINE-SPACING] font='" + font.name + "' size=" + fontSize
-            + " ratio=" + multiplier.Value.ToString( "0.000" )
-            + ", lineSpacing " + currentLineSpacing.Value.ToString( "0.000" ) + " -> " + newLineSpacing.ToString( "0.000" ) + "." );
       }
 
       private static string GetGameObjectPath( GameObject go )
@@ -841,6 +882,8 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void ScheduleDelayedFontVerification( object ui, Font expectedFont, string tag )
       {
+         if( !Settings.EnableSdwDiagnostics ) return;
+
          try
          {
             CoroutineHelper.Start( DelayedFontVerification( ui, expectedFont, tag, _changeFontGeneration, this ) );

@@ -39,13 +39,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          return truncatedRealName + PrivateAliasSuffix;
       }
 
-      private static readonly string[] ReplacementFontFileNames =
-      {
-         "UIMainFont",
-         "UIMainFont_Subset",
-         "UISubFont",
-      };
-
       private static readonly string[] TmpFontAssetNameSuffixes =
       {
          " SDF",
@@ -137,19 +130,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
 
       private const uint FR_NONE = 0x0;
 
-      private static string ResourceNameFor( string fontFileName )
-      {
-         return "Fonts.sdwfonts." + fontFileName + ".otf";
-      }
-
-      public static void PreRegisterNativeFontsOnly()
-      {
-      }
-
-      public static void Initialize()
-      {
-      }
-
       private static void RegisterShutdownCleanup()
       {
          if( _hasRegisteredShutdownCleanup ) return;
@@ -222,34 +202,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          catch
          {
          }
-      }
-
-      private static bool TryRegisterOneNative( Assembly assembly, string fileName, out string registeredFamilyNameOut, out string realFamilyNameOut, out string cacheFilePathOut, out bool registeredViaPerUserRegistryOut )
-      {
-         registeredFamilyNameOut = null;
-         realFamilyNameOut = null;
-         cacheFilePathOut = null;
-         registeredViaPerUserRegistryOut = false;
-
-         var resourceName = ResourceNameFor( fileName );
-         byte[] fontBytes;
-
-         using( var stream = assembly.GetManifestResourceStream( resourceName ) )
-         {
-            if( stream == null )
-            {
-               XuaLogger.AutoTranslator.Warn( "NativeFontReplacements: embedded resource not found: '" + resourceName + "'." );
-               return false;
-            }
-
-            using( var memory = new MemoryStream() )
-            {
-               stream.CopyTo( memory );
-               fontBytes = memory.ToArray();
-            }
-         }
-
-         return TryRegisterOneFromBytes( fontBytes, fileName, out registeredFamilyNameOut, out realFamilyNameOut, out cacheFilePathOut, out registeredViaPerUserRegistryOut );
       }
 
       private static bool TryRegisterOneFromBytes( byte[] fontBytes, string fileName, out string registeredFamilyNameOut, out string realFamilyNameOut, out string cacheFilePathOut, out bool registeredViaPerUserRegistryOut )
@@ -446,134 +398,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          return true;
       }
 
-      private static void RegisterOne( Assembly assembly, string fileName )
-      {
-         string registeredFamilyName;
-         string realFamilyName;
-         string cacheFilePath;
-         bool registeredViaPerUserRegistry;
-
-         if( NativeNameToReplacementName.TryGetValue( fileName, out registeredFamilyName ) )
-         {
-            realFamilyName = registeredFamilyName;
-            if( !ReplacementNameToCacheFilePath.TryGetValue( registeredFamilyName, out cacheFilePath ) )
-            {
-               cacheFilePath = null;
-            }
-            registeredViaPerUserRegistry = ReplacementNameToRegisteredViaPerUserRegistry.TryGetValue( registeredFamilyName, out var rpu ) && rpu;
-
-            XuaLogger.AutoTranslator.Info(
-               "NativeFontReplacements: '" + fileName + "' was already natively registered as '" + registeredFamilyName
-               + "' (preloader-stage pre-registration - see \"ELEVENTH ISSUE\") - skipping straight to Unity-side verification." );
-         }
-         else
-         {
-            if( !TryRegisterOneNative( assembly, fileName, out registeredFamilyName, out realFamilyName, out cacheFilePath, out registeredViaPerUserRegistry ) )
-            {
-               return;
-            }
-         }
-
-         try
-         {
-            var isEnumerable = IsNameInOsInstalledFonts( registeredFamilyName );
-            AliasConfirmedOsVisibleAtRegistration[ registeredFamilyName ] = isEnumerable;
-
-            if( isEnumerable )
-            {
-               XuaLogger.AutoTranslator.Info( "NativeFontReplacements: confirmed '" + registeredFamilyName + "' IS present in Font.GetOSInstalledFontNames() - CreateDynamicFontFromOSFont should now be able to resolve it." );
-            }
-            else
-            {
-               XuaLogger.AutoTranslator.Warn( "NativeFontReplacements: '" + registeredFamilyName + "' is still NOT present in Font.GetOSInstalledFontNames() even after the non-private AddFontResourceExW registration" + ( registeredViaPerUserRegistry ? " and the new per-user Fonts registry entry (see class doc comment, \"TENTH ISSUE\")" : "" ) + ". Per the class doc comment's \"NINTH ISSUE\", GetOSInstalledFontNames() itself is confirmed by Unity's own engineers to be unreliable regardless of registration correctness - do not treat this line alone as proof the replacement failed. Check the [FINGERPRINT]/[LIVE-VERIFY-FAIL] lines below (or this component's own [RU-TEXT] line) for fingerprintMatches, which measures the actually-rendered glyphs directly and is the more trustworthy signal." );
-            }
-         }
-         catch( Exception e )
-         {
-            XuaLogger.AutoTranslator.Warn( e, "NativeFontReplacements: failed to verify enumerability of '" + registeredFamilyName + "' via GetOSInstalledFontNames." );
-         }
-
-         try
-         {
-            var probeFont = FontHelper.GetTextFont( registeredFamilyName, 16 );
-            var hasCyrillicGlyph = probeFont != null && SafeHasCharacter( probeFont );
-            var weight = ReplacementNameToWeight.TryGetValue( registeredFamilyName, out var w ) ? w : FW_DONTCARE;
-            var faceResolves = TryVerifyFontFaceResolves( registeredFamilyName, weight, out var actualFace );
-
-            if( probeFont == null )
-            {
-               XuaLogger.AutoTranslator.Warn(
-                  "NativeFontReplacements: Font.CreateDynamicFontFromOSFont('" + registeredFamilyName + "', 16) returned "
-                  + "null immediately after registration - the alias could not be resolved to a Font object at all." );
-            }
-
-            XuaLogger.AutoTranslator.Info(
-               "NativeFontReplacements: [FACE-VERIFY] (secondary/GDI-only diagnostic, not the pass/fail gate - see "
-               + "\"EIGHTH BUG\") for '" + registeredFamilyName + "': faceResolves=" + faceResolves
-               + ( faceResolves ? "" : ", actualFace='" + ( actualFace ?? "<unknown/failed>" ) + "'" )
-               + ", probeHasCyrillicGlyph=" + hasCyrillicGlyph + "." );
-
-            var isEnumerable = AliasConfirmedOsVisibleAtRegistration.TryGetValue( registeredFamilyName, out var enumerableNow ) && enumerableNow;
-            if( ( !isEnumerable || !faceResolves ) && cacheFilePath == null )
-            {
-               XuaLogger.AutoTranslator.Warn(
-                  "NativeFontReplacements: '" + registeredFamilyName + "' looked shaky right after registration "
-                  + "(osEnumerable=" + isEnumerable + ", faceResolves=" + faceResolves + ") but this call has no "
-                  + "cache file path on hand (see \"ELEVENTH ISSUE\") to attempt a re-registration with - skipping "
-                  + "the self-heal retry for this alias; FontCache's own per-render retries still apply." );
-            }
-            else if( !isEnumerable || !faceResolves )
-            {
-               XuaLogger.AutoTranslator.Warn(
-                  "NativeFontReplacements: '" + registeredFamilyName + "' looked shaky right after registration "
-                  + "(osEnumerable=" + isEnumerable + ", faceResolves=" + faceResolves + ") - attempting one "
-                  + "re-registration before leaving it as-is for FontCache's own per-render retries..." );
-
-               try
-               {
-                  RemoveFontResourceExW( cacheFilePath, FR_NONE, IntPtr.Zero );
-                  var reAdded = AddFontResourceExW( cacheFilePath, FR_NONE, IntPtr.Zero );
-                  BroadcastFontChange();
-
-                  if( reAdded != 0 )
-                  {
-                     var reEnumerable = IsNameInOsInstalledFonts( registeredFamilyName );
-                     AliasConfirmedOsVisibleAtRegistration[ registeredFamilyName ] = reEnumerable;
-                     var reFaceResolves = TryVerifyFontFaceResolves( registeredFamilyName, weight, out var reActualFace );
-
-                     if( reEnumerable )
-                     {
-                        XuaLogger.AutoTranslator.Info(
-                           "NativeFontReplacements: re-registration fixed it - '" + registeredFamilyName
-                           + "' is now present in Font.GetOSInstalledFontNames() (faceResolves=" + reFaceResolves + ")." );
-                     }
-                     else
-                     {
-                        XuaLogger.AutoTranslator.Error(
-                           "NativeFontReplacements: re-registration did NOT fix it - '" + registeredFamilyName
-                           + "' is still absent from Font.GetOSInstalledFontNames() (faceResolves=" + reFaceResolves
-                           + ", actualFace='" + ( reActualFace ?? "<unknown/failed>" ) + "'). FontCache's per-render "
-                           + "verification will keep retrying per component and fall back to the untouched native font "
-                           + "once poisoned, rather than silently rendering a substitute." );
-                     }
-                  }
-                  else
-                  {
-                     XuaLogger.AutoTranslator.Warn( "NativeFontReplacements: re-registration's AddFontResourceExW call itself failed (Win32 error " + Marshal.GetLastWin32Error() + ")." );
-                  }
-               }
-               catch( Exception e )
-               {
-                  XuaLogger.AutoTranslator.Warn( e, "NativeFontReplacements: re-registration attempt for '" + registeredFamilyName + "' threw." );
-               }
-            }
-         }
-         catch( Exception e )
-         {
-            XuaLogger.AutoTranslator.Warn( e, "NativeFontReplacements: [FACE-VERIFY] diagnostic threw for '" + registeredFamilyName + "'." );
-         }
-      }
-
       private static bool IsNameInOsInstalledFonts( string name )
       {
          var installedNames = FontHelper.GetOSInstalledFontNames();
@@ -604,18 +428,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          {
             XuaLogger.AutoTranslator.Warn( e, "NativeFontReplacements: TryVerifyAliasEnumerable threw for '" + registeredFamilyName + "' - falling back to the last known result from registration time." );
             return AliasConfirmedOsVisibleAtRegistration.TryGetValue( registeredFamilyName, out var cached ) && cached;
-         }
-      }
-
-      private static bool SafeHasCharacter( Font font )
-      {
-         try
-         {
-            return font.HasCharacter( 'А' );
-         }
-         catch
-         {
-            return false;
          }
       }
 
@@ -1521,19 +1333,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          RecomputeHeadCheckSumAdjustment( result, baseOffset, numTables );
 
          return result;
-      }
-
-      public static bool HasReplacements => NativeNameToReplacementName.Count > 0;
-
-      public static bool TryGetReplacementFontName( string nativeFontName, out string replacementFontName )
-      {
-         if( string.IsNullOrEmpty( nativeFontName ) )
-         {
-            replacementFontName = null;
-            return false;
-         }
-
-         return NativeNameToReplacementName.TryGetValue( nativeFontName, out replacementFontName );
       }
 
       public static bool TryGetReplacementFontNameForTextMeshPro( string tmpFontAssetName, out string replacementFontName )

@@ -16,13 +16,45 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
    internal static class NativeFontCyrillicSpacingFixHook
    {
-      private const float SweepIntervalSeconds = 0.15f;
+      private const float SweepIntervalWithoutEventSeconds = 0.15f;
+      private const float SweepIntervalWithEventSeconds = 2.0f;
+      private const float RefreshMinIntervalSeconds = 0.4f;
 
       private static bool _applied;
+      private static bool _subscribed;
 
-      private static readonly HashSet<string> _loggedFontNames = new HashSet<string>();
+      private sealed class FontState
+      {
+         public int LastGlyphCount = -1;
+         public bool Initialized;
+         public bool IsOverrideFont;
+      }
 
-      private static readonly HashSet<string> _warmedUpFonts = new HashSet<string>();
+      private static readonly Dictionary<int, FontState> _fontStates = new Dictionary<int, FontState>();
+
+      private static FontState GetState( Font font )
+      {
+         int id = font.GetInstanceID();
+         if( !_fontStates.TryGetValue( id, out var state ) )
+         {
+            if( _fontStates.Count >= 1024 )
+            {
+               _fontStates.Clear();
+            }
+            state = new FontState();
+            _fontStates[ id ] = state;
+         }
+         return state;
+      }
+
+      private static readonly HashSet<int> _loggedFontIds = new HashSet<int>();
+
+      private static readonly HashSet<long> _warmedUpFonts = new HashSet<long>();
+
+      private static long WarmKey( Font font, int size )
+      {
+         return ( (long)font.GetInstanceID() << 32 ) | (uint)size;
+      }
 
       private static string _cyrillicAlphabetString;
 
@@ -57,6 +89,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       public static void Apply()
       {
+         if( !Settings.EnableCyrillicSpacingFix ) return;
          if( _applied )
          {
             return;
@@ -123,6 +156,8 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                }
             }
 
+            _subscribed = subscribed;
+
             if( subscribed )
             {
                XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: subscribed to Font.textureRebuilt." );
@@ -140,7 +175,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          try
          {
             CoroutineHelper.Start( PeriodicSweepLoop() );
-            XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: started periodic backstop sweep (every " + SweepIntervalSeconds + "s)." );
+            XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: started periodic backstop sweep (every " + ( _subscribed ? SweepIntervalWithEventSeconds : SweepIntervalWithoutEventSeconds ) + "s)." );
          }
          catch( Exception e )
          {
@@ -212,58 +247,156 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
+      private const float DirtyCoalesceSeconds = 0.1f;
+      private static readonly Dictionary<int, Font> _dirtyFonts = new Dictionary<int, Font>();
+      private static bool _dirtyDrainScheduled;
+
       private static void OnFontTextureRebuilt( Font font )
       {
          if( font == null )
          {
             return;
          }
-         TryCorrect( font );
+
+         _dirtyFonts[ font.GetInstanceID() ] = font;
+         if( _dirtyDrainScheduled )
+         {
+            return;
+         }
+
+         _dirtyDrainScheduled = true;
+         try
+         {
+            CoroutineHelper.Start( DrainDirtyFonts() );
+         }
+         catch( Exception e )
+         {
+            _dirtyDrainScheduled = false;
+            _dirtyFonts.Clear();
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to schedule the coalesced font correction; correcting immediately." );
+            TryCorrect( font, force: true );
+         }
+      }
+
+      private static IEnumerator DrainDirtyFonts()
+      {
+         var wait = CoroutineHelper.CreateWaitForSecondsRealtime( DirtyCoalesceSeconds );
+         if( wait != null )
+         {
+            yield return wait;
+         }
+         else
+         {
+            yield return CoroutineHelper.CreateWaitForSeconds( DirtyCoalesceSeconds );
+         }
+
+         _dirtyDrainScheduled = false;
+         if( _dirtyFonts.Count == 0 )
+         {
+            yield break;
+         }
+
+         var batch = new List<Font>( _dirtyFonts.Values );
+         _dirtyFonts.Clear();
+
+         for( int i = 0; i < batch.Count; i++ )
+         {
+            var font = batch[ i ];
+            if( font == null )
+            {
+               continue;
+            }
+
+            try
+            {
+               using( HitchProfiler.Measure( "FontDrain" ) )
+               {
+                  TryCorrect( font, force: true );
+               }
+            }
+            catch( Exception e )
+            {
+               XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: coalesced font correction failed." );
+            }
+         }
       }
 
       private static IEnumerator PeriodicSweepLoop()
       {
          while( true )
          {
-            var wait = CoroutineHelper.CreateWaitForSecondsRealtime( SweepIntervalSeconds );
+            float interval = _subscribed ? SweepIntervalWithEventSeconds : SweepIntervalWithoutEventSeconds;
+            var wait = CoroutineHelper.CreateWaitForSecondsRealtime( interval );
             if( wait != null )
             {
                yield return wait;
             }
             else
             {
-               yield return CoroutineHelper.CreateWaitForSeconds( SweepIntervalSeconds );
+               yield return CoroutineHelper.CreateWaitForSeconds( interval );
             }
 
-            Font[] fonts = null;
-            try
-            {
-               fonts = ComponentHelper.FindObjectsOfType<Font>();
-            }
-            catch( Exception e )
-            {
-               XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to enumerate loaded fonts for the periodic sweep." );
-            }
+            SweepOnce();
+         }
+      }
 
+      private static void SweepOnce()
+      {
+         try
+         {
+            using( HitchProfiler.Measure( "FontSweep" ) )
+            {
+               SweepFonts();
+            }
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: periodic sweep failed." );
+         }
+      }
+
+      private static void SweepFonts()
+      {
+         try
+         {
+            Font[] fonts = ComponentHelper.FindObjectsOfType<Font>();
             if( fonts == null )
             {
-               continue;
+               return;
             }
 
             for( int i = 0; i < fonts.Length; i++ )
             {
                var font = fonts[ i ];
-               if( font == null )
+               if( font == null || !font.dynamic )
                {
                   continue;
                }
-               TryCorrect( font );
+
+               try
+               {
+                  TryCorrect( font );
+               }
+               catch( Exception e )
+               {
+                  XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: periodic sweep failed on a font." );
+               }
             }
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: periodic sweep failed." );
          }
       }
 
-      public static void TryCorrect( Font font )
+      public static void TryCorrect( Font font, bool force = false )
       {
+         if( !Settings.EnableCyrillicSpacingFix ) return;
+         if( font == null )
+         {
+            return;
+         }
+
          if( FontCache.IsNativeReplacementBundleFont( font ) )
          {
             WarmUpCyrillicGlyphs( font );
@@ -272,7 +405,14 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          LogFontInUse( font );
 
-         if( !string.IsNullOrEmpty( Settings.OverrideFont ) && string.Equals( font?.name, Settings.OverrideFont, StringComparison.Ordinal ) )
+         var state = GetState( font );
+         if( !state.Initialized )
+         {
+            state.Initialized = true;
+            state.IsOverrideFont = !string.IsNullOrEmpty( Settings.OverrideFont ) && string.Equals( font.name, Settings.OverrideFont, StringComparison.Ordinal );
+         }
+
+         if( state.IsOverrideFont )
          {
             return;
          }
@@ -281,20 +421,126 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          try
          {
-            CorrectFont( font );
+            CorrectFont( font, state, force || !_subscribed );
          }
          catch( Exception e )
          {
-            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to normalize Cyrillic advance widths on font '" + font?.name + "'." );
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to normalize Cyrillic advance widths on font '" + font.name + "'." );
          }
+      }
+
+      private const string PrebakeMainFontName = "UIMainFont";
+      private const string PrebakePunctuation = " .,:;!?-\u2014\u2013\u2026\u00AB\u00BB()[]%+/'\"\u2116\u00D7*&#=<>~\u00B7\u2022";
+      private static readonly HashSet<int> _prebakeScheduled = new HashSet<int>();
+      private static string _prebakeChars;
+
+      public static void SchedulePrebake( Font font )
+      {
+         if( !Settings.EnableCyrillicSpacingFix || font == null )
+         {
+            return;
+         }
+
+         int id = font.GetInstanceID();
+         if( !_prebakeScheduled.Add( id ) )
+         {
+            return;
+         }
+
+         var sizes = Settings.SdwPrebakeFontSizes;
+         if( sizes == null || sizes.Length == 0 )
+         {
+            return;
+         }
+
+         if( !string.Equals( font.name, PrebakeMainFontName, StringComparison.Ordinal ) )
+         {
+            return;
+         }
+
+         try
+         {
+            CoroutineHelper.Start( PrebakeRoutine( font, sizes ) );
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to schedule the background glyph pre-bake." );
+         }
+      }
+
+      private static string GetPrebakeChars()
+      {
+         if( _prebakeChars == null )
+         {
+            var sb = new System.Text.StringBuilder( 160 );
+            foreach( var c in _cyrillicLetters )
+            {
+               sb.Append( c );
+            }
+            sb.Append( "0123456789" );
+            sb.Append( PrebakePunctuation );
+            _prebakeChars = sb.ToString();
+         }
+         return _prebakeChars;
+      }
+
+      private static IEnumerator PrebakeRoutine( Font font, int[] sizes )
+      {
+         var wait = CoroutineHelper.CreateWaitForSecondsRealtime( 0.75f );
+         if( wait != null )
+         {
+            yield return wait;
+         }
+         else
+         {
+            yield return CoroutineHelper.CreateWaitForSeconds( 0.75f );
+         }
+
+         var chars = GetPrebakeChars();
+         int baked = 0;
+
+         for( int i = 0; i < sizes.Length; i++ )
+         {
+            if( font == null )
+            {
+               yield break;
+            }
+
+            bool failed = false;
+            using( HitchProfiler.Measure( "PrebakeGlyphs" ) )
+            {
+               try
+               {
+                  font.RequestCharactersInTexture( chars, sizes[ i ] );
+                  baked++;
+               }
+               catch( Exception e )
+               {
+                  XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: background pre-bake failed on font '" + font.name + "' at size " + sizes[ i ] + "; stopping." );
+                  failed = true;
+               }
+            }
+
+            if( failed )
+            {
+               yield break;
+            }
+
+            yield return null;
+         }
+
+         XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: background pre-bake of font '" + font.name + "' finished (" + baked + " size(s))." );
       }
 
       public static void PrewarmForSize( Font font, int size, string extraText )
       {
+         if( !Settings.EnableCyrillicSpacingFix ) return;
          if( font == null || size <= 0 )
          {
             return;
          }
+
+         SchedulePrebake( font );
 
          try
          {
@@ -306,13 +552,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                   sb.Append( c );
                }
                _cyrillicAlphabetString = sb.ToString();
-            }
-
-            string key = font.GetInstanceID() + ":" + size;
-            if( _warmedUpFonts.Add( key ) )
-            {
-               XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: [PREWARM] baking " + _cyrillicLetters.Count + " Cyrillic glyph(s) on '" + font.name + "' (id=" + font.GetInstanceID() + ") at component size " + size + "." );
-               font.RequestCharactersInTexture( _cyrillicAlphabetString, size );
             }
 
             if( !string.IsNullOrEmpty( extraText ) )
@@ -334,8 +573,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
 
          int size = font.fontSize;
-         string key = font.GetInstanceID() + ":" + size;
-         if( !_warmedUpFonts.Add( key ) )
+         if( !_warmedUpFonts.Add( WarmKey( font, size ) ) )
          {
             return;
          }
@@ -368,14 +606,13 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return;
          }
 
-         string name = font.name;
-         if( _loggedFontNames.Add( name ) )
+         if( _loggedFontIds.Add( font.GetInstanceID() ) )
          {
-            XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: font in use -> '" + name + "' (dynamic=" + font.dynamic + ", size=" + font.fontSize + ")." );
+            XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: font in use -> '" + font.name + "' (dynamic=" + font.dynamic + ", size=" + font.fontSize + ")." );
          }
       }
 
-      private static void CorrectFont( Font font )
+      private static void CorrectFont( Font font, FontState state, bool force )
       {
          IList<CharacterInfo> info = font.characterInfo;
          if( info == null || info.Count == 0 )
@@ -383,8 +620,15 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return;
          }
 
+         int count = info.Count;
+         if( !force && state.LastGlyphCount == count )
+         {
+            return;
+         }
+         state.LastGlyphCount = count;
+
          bool hasCyrillic = false;
-         for( int i = 0; i < info.Count; i++ )
+         for( int i = 0; i < count; i++ )
          {
             if( _cyrillicLetters.Contains( (char)info[ i ].index ) )
             {
@@ -399,9 +643,8 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          bool isKnownFontFamily = IsUIMainFontFamily( font.name );
 
-         bool changed = false;
-         var merged = new CharacterInfo[ info.Count ];
-         for( int i = 0; i < info.Count; i++ )
+         CharacterInfo[] merged = null;
+         for( int i = 0; i < count; i++ )
          {
             var entry = info[ i ];
             char current = (char)entry.index;
@@ -416,15 +659,25 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
                if( entry.advance != correctedAdvance )
                {
+                  if( merged == null )
+                  {
+                     merged = new CharacterInfo[ count ];
+                     for( int k = 0; k < i; k++ )
+                     {
+                        merged[ k ] = info[ k ];
+                     }
+                  }
                   entry.advance = correctedAdvance;
-                  changed = true;
                }
             }
 
-            merged[ i ] = entry;
+            if( merged != null )
+            {
+               merged[ i ] = entry;
+            }
          }
 
-         if( changed )
+         if( merged != null )
          {
             font.characterInfo = new Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<CharacterInfo>( merged );
             XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: corrected Cyrillic advance width(s) on font '" + font.name + "'." );
@@ -433,6 +686,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
+      private static readonly Dictionary<int, Font> _pendingRefreshFonts = new Dictionary<int, Font>();
+      private static float _lastRefreshTime = -100f;
+      private static bool _refreshScheduled;
+      private const double RefreshBudgetMs = 3.0;
+
       private static void RefreshComponentsUsingFont( Font font )
       {
          if( font == null || UnityTypes.Text == null )
@@ -440,63 +698,124 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return;
          }
 
-         UnityEngine.Object[] components;
+         _pendingRefreshFonts[ font.GetInstanceID() ] = font;
+         if( _refreshScheduled )
+         {
+            return;
+         }
+
+         float since = Time.realtimeSinceStartup - _lastRefreshTime;
+         float delay = since >= RefreshMinIntervalSeconds ? 0f : RefreshMinIntervalSeconds - since;
+
+         _refreshScheduled = true;
+         try
+         {
+            CoroutineHelper.Start( RefreshCoroutine( delay ) );
+         }
+         catch( Exception e )
+         {
+            _refreshScheduled = false;
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to schedule the deferred component refresh." );
+         }
+      }
+
+      private static IEnumerator RefreshCoroutine( float delay )
+      {
+         if( delay > 0f )
+         {
+            var wait = CoroutineHelper.CreateWaitForSecondsRealtime( delay );
+            if( wait != null )
+            {
+               yield return wait;
+            }
+            else
+            {
+               yield return CoroutineHelper.CreateWaitForSeconds( delay );
+            }
+         }
+         else
+         {
+            yield return null;
+         }
+
+         if( _pendingRefreshFonts.Count == 0 || UnityTypes.Text == null )
+         {
+            _pendingRefreshFonts.Clear();
+            _lastRefreshTime = Time.realtimeSinceStartup;
+            _refreshScheduled = false;
+            yield break;
+         }
+
+         var pendingIds = new HashSet<int>( _pendingRefreshFonts.Keys );
+         _pendingRefreshFonts.Clear();
+
+         UnityEngine.Object[] components = null;
          try
          {
             components = UnityEngine.Object.FindObjectsOfType( UnityTypes.Text.UnityType );
          }
          catch( Exception e )
          {
-            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to enumerate Text component(s) to refresh after correcting font '" + font.name + "'." );
-            return;
-         }
-
-         if( components == null )
-         {
-            return;
+            XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to enumerate Text component(s) to refresh after correcting font(s)." );
          }
 
          int refreshed = 0;
-         for( int i = 0; i < components.Length; i++ )
+         if( components != null )
          {
-            var component = components[ i ];
-            if( component == null )
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            for( int i = 0; i < components.Length; i++ )
             {
-               continue;
-            }
+               if( clock.Elapsed.TotalMilliseconds > RefreshBudgetMs )
+               {
+                  yield return null;
+                  clock.Reset();
+                  clock.Start();
+               }
 
-            var typedComponent = Il2CppUtilities.CreateProxyComponentWithDerivedType( component.Pointer, UnityTypes.Text.ClrType );
+               var component = components[ i ];
+               if( component == null )
+               {
+                  continue;
+               }
 
-            Font componentFont;
-            try
-            {
-               componentFont = UnityTypes.Text_Properties.Font.Get( typedComponent ) as Font;
-            }
-            catch( Exception e )
-            {
-               XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to read the font off a component while refreshing after correcting font '" + font.name + "'." );
-               continue;
-            }
+               try
+               {
+                  var typedComponent = Il2CppUtilities.CreateProxyComponentWithDerivedType( component.Pointer, UnityTypes.Text.ClrType );
+                  var componentFont = UnityTypes.Text_Properties.Font.Get( typedComponent ) as Font;
+                  if( componentFont == null || !pendingIds.Contains( componentFont.GetInstanceID() ) )
+                  {
+                     continue;
+                  }
 
-            if( !UnityObjectReferenceComparer.Default.Equals( componentFont, font ) )
-            {
-               continue;
-            }
-
-            try
-            {
-               typedComponent.SetAllDirtyEx();
-               refreshed++;
-            }
-            catch( Exception e )
-            {
-               XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to force a redraw on a component using corrected font '" + font.name + "'." );
+                  typedComponent.SetAllDirtyEx();
+                  refreshed++;
+               }
+               catch( Exception e )
+               {
+                  XuaLogger.AutoTranslator.Warn( e, "NativeFontCyrillicSpacingFixHook: failed to refresh a component using a corrected font." );
+               }
             }
          }
 
          if( refreshed > 0 )
          {
-            XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: refreshed " + refreshed + " already-rendered component(s) using font '" + font.name + "' so the corrected Cyrillic spacing actually shows up." );
+            XuaLogger.AutoTranslator.Debug( "NativeFontCyrillicSpacingFixHook: refreshed " + refreshed + " already-rendered component(s) so the corrected Cyrillic spacing actually shows up." );
+         }
+
+         _lastRefreshTime = Time.realtimeSinceStartup;
+         _refreshScheduled = false;
+
+         if( _pendingRefreshFonts.Count > 0 )
+         {
+            _refreshScheduled = true;
+            try
+            {
+               CoroutineHelper.Start( RefreshCoroutine( RefreshMinIntervalSeconds ) );
+            }
+            catch( Exception )
+            {
+               _refreshScheduled = false;
+            }
          }
       }
 

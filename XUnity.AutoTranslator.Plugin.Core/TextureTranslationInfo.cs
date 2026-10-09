@@ -97,6 +97,16 @@ namespace XUnity.AutoTranslator.Plugin.Core
          return _originalData;
       }
 
+      public void EnsureOriginalData()
+      {
+         SetupHashAndData( Original.Target );
+         if( _originalData == null )
+         {
+            var t = Original.Target;
+            if( t != null ) _originalData = t.GetTextureData().Data;
+         }
+      }
+
       public byte[] GetOrCreateOriginalData()
       {
 
@@ -180,7 +190,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
                var result = SetupKeyForNameWithFallback( name, texture );
 
-               if( Settings.EnableTextureToggling || Settings.DetectDuplicateTextureNames )
+               if( Settings.DetectDuplicateTextureNames )
                {
                   if( result == null )
                   {
@@ -199,7 +209,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
                var result = SetupKeyForNameWithFallback( name, texture );
 
-               if( Settings.EnableTextureToggling || Settings.DetectDuplicateTextureNames )
+               if( Settings.DetectDuplicateTextureNames )
                {
                   if( result == null )
                   {

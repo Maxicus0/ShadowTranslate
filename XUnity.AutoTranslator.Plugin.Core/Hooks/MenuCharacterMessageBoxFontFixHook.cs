@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using Il2CppInterop.Runtime;
 using UnityEngine;
+using XUnity.AutoTranslator.Plugin.Core.Configuration;
 using XUnity.AutoTranslator.Plugin.Core.Extensions;
 using XUnity.AutoTranslator.Plugin.Core.Utilities;
 using XUnity.Common.Constants;
@@ -17,8 +18,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       private const string HarmonyId = "XUnity.AutoTranslator.MenuCharacterMessageBoxFontFixHook";
       private static HarmonyLib.Harmony _harmony;
       private static bool _applied;
-
-      private const string DiagBuildStamp = "diag-build-2";
 
       private static readonly string[] RelativePaths = new[]
       {
@@ -59,7 +58,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
             _applied = true;
             XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: patched " + target.DeclaringType?.FullName + "." + target + "." );
-            XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: [" + DiagBuildStamp + "] active - poll-based reassert + CHARBOX-DIAG logging present in this build." );
          }
          catch( Exception e )
          {
@@ -69,6 +67,8 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private const float ReassertPollIntervalSeconds = 0.3f;
       private const float ReassertPollWindowSeconds = 6.0f;
+
+      private static readonly Dictionary<int, int> _pollGeneration = new Dictionary<int, int>();
 
       private static void ConfigureMessageBox_Postfix( object __instance )
       {
@@ -80,9 +80,17 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return;
             }
 
-            XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] ConfigureMessageBox fired on '" + component.GetPath() + "'; starting " + ReassertPollWindowSeconds.ToString( "0.0" ) + "s reassert poll." );
+            var rootId = component.GetInstanceID();
+            _pollGeneration.TryGetValue( rootId, out var generation );
+            generation++;
+            _pollGeneration[ rootId ] = generation;
 
-            CoroutineHelper.Start( ReassertMessageBoxFonts( component.transform ) );
+            if( Settings.EnableSdwDiagnostics )
+            {
+               XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] ConfigureMessageBox fired on '" + component.GetPath() + "'; starting " + ReassertPollWindowSeconds.ToString( "0.0" ) + "s reassert poll." );
+            }
+
+            CoroutineHelper.Start( ReassertMessageBoxFonts( component.transform, rootId, generation ) );
          }
          catch( Exception e )
          {
@@ -90,75 +98,90 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
-      private static IEnumerator ReassertMessageBoxFonts( Transform root )
+      private static IEnumerator ReassertMessageBoxFonts( Transform root, int rootId, int generation )
       {
          var wait = CoroutineHelper.CreateWaitForSeconds( ReassertPollIntervalSeconds );
          float elapsed = 0f;
          int tick = 0;
+         bool diag = Settings.EnableSdwDiagnostics;
 
-         while( elapsed <= ReassertPollWindowSeconds )
+         try
          {
-            if( wait != null )
+            while( elapsed <= ReassertPollWindowSeconds )
             {
-               yield return wait;
+               if( wait != null )
+               {
+                  yield return wait;
+               }
+               else
+               {
+                  yield return null;
+               }
+               elapsed += ReassertPollIntervalSeconds;
+               tick++;
+
+               if( root == null )
+               {
+                  yield break;
+               }
+
+               if( !_pollGeneration.TryGetValue( rootId, out var currentGeneration ) || currentGeneration != generation )
+               {
+                  yield break;
+               }
+
+               foreach( var relativePath in RelativePaths )
+               {
+                  Transform child;
+                  try
+                  {
+                     child = root.Find( relativePath );
+                  }
+                  catch( Exception e )
+                  {
+                     XuaLogger.AutoTranslator.Warn( e, "MenuCharacterMessageBoxFontFixHook: Transform.Find('" + relativePath + "') threw." );
+                     continue;
+                  }
+
+                  if( child == null )
+                  {
+                     continue;
+                  }
+
+                  object textComponent = FindTextComponent( child.gameObject );
+                  if( textComponent == null )
+                  {
+                     continue;
+                  }
+
+                  if( relativePath == "MessageBox/TextArea" )
+                  {
+                     ForceMiddleCenter( textComponent );
+                  }
+
+                  var info = textComponent.GetOrCreateTextTranslationInfo();
+                  bool isTranslated = info != null && info.IsTranslated;
+
+                  if( isTranslated )
+                  {
+                     info.ChangeFont( textComponent );
+                  }
+
+                  if( diag )
+                  {
+                     XuaLogger.AutoTranslator.Debug(
+                        "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] tick=" + tick + " path='" + relativePath
+                        + "' found=True isTranslated=" + isTranslated + " translatedLength=" + ( info?.TranslatedText?.Length ?? -1 )
+                        + " reasserted=" + isTranslated + "." );
+                  }
+               }
             }
-            else
+         }
+         finally
+         {
+            if( _pollGeneration.TryGetValue( rootId, out var last ) && last == generation )
             {
-               yield return null;
-            }
-            elapsed += ReassertPollIntervalSeconds;
-            tick++;
-
-            if( root == null )
-            {
-               XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] tick=" + tick + " root destroyed; stopping poll early." );
-               yield break;
-            }
-
-            foreach( var relativePath in RelativePaths )
-            {
-               Transform child;
-               try
-               {
-                  child = root.Find( relativePath );
-               }
-               catch( Exception e )
-               {
-                  XuaLogger.AutoTranslator.Warn( e, "MenuCharacterMessageBoxFontFixHook: Transform.Find('" + relativePath + "') threw." );
-                  continue;
-               }
-
-               if( child == null )
-               {
-                  XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] tick=" + tick + " path='" + relativePath + "' under '" + root.GetPath() + "' -> not found." );
-                  continue;
-               }
-
-               object textComponent = FindTextComponent( child.gameObject );
-               if( textComponent == null )
-               {
-                  XuaLogger.AutoTranslator.Debug( "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] tick=" + tick + " path='" + relativePath + "' -> GameObject found but no Text-derived component on it." );
-                  continue;
-               }
-
-               if( relativePath == "MessageBox/TextArea" )
-               {
-                  ForceMiddleCenter( textComponent );
-               }
-
-               var info = textComponent.GetOrCreateTextTranslationInfo();
-               bool isTranslated = info != null && info.IsTranslated;
-               int translatedLength = info?.TranslatedText?.Length ?? -1;
-
-               if( isTranslated )
-               {
-                  info.ChangeFont( textComponent );
-               }
-
-               XuaLogger.AutoTranslator.Debug(
-                  "MenuCharacterMessageBoxFontFixHook: [CHARBOX-DIAG] tick=" + tick + " path='" + relativePath
-                  + "' found=True isTranslated=" + isTranslated + " translatedLength=" + translatedLength
-                  + " reasserted=" + isTranslated + "." );
+               _pollGeneration.Remove( rootId );
             }
          }
       }
@@ -175,8 +198,19 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             int id = component.GetInstanceID();
             if( !_isMessageBoxTextArea.TryGetValue( id, out bool isTarget ) )
             {
-               var path = component.GetPath();
-               isTarget = path != null && path.EndsWith( "/MessageBox/TextArea", StringComparison.Ordinal );
+               if( string.Equals( component.name, "TextArea", StringComparison.Ordinal ) )
+               {
+                  var path = component.GetPath();
+                  isTarget = path != null && path.EndsWith( "/MessageBox/TextArea", StringComparison.Ordinal );
+               }
+               else
+               {
+                  isTarget = false;
+               }
+               if( _isMessageBoxTextArea.Count >= 4096 )
+               {
+                  _isMessageBoxTextArea.Clear();
+               }
                _isMessageBoxTextArea[ id ] = isTarget;
             }
 
@@ -191,6 +225,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       }
 
       private const int TextAnchorMiddleCenter = 4;
+      private static readonly Dictionary<Type, PropertyInfo> _alignmentPropertyCache = new Dictionary<Type, PropertyInfo>();
 
       internal static void ForceMiddleCenter( object textComponent )
       {
@@ -198,7 +233,12 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          try
          {
-            var prop = textComponent.GetType().GetProperty( "alignment", BindingFlags.Instance | BindingFlags.Public );
+            var componentType = textComponent.GetType();
+            if( !_alignmentPropertyCache.TryGetValue( componentType, out var prop ) )
+            {
+               prop = componentType.GetProperty( "alignment", BindingFlags.Instance | BindingFlags.Public );
+               _alignmentPropertyCache[ componentType ] = prop;
+            }
             if( prop == null || !prop.CanRead || !prop.CanWrite ) return;
 
             var current = prop.GetValue( textComponent, null );
@@ -258,46 +298,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static Type ResolveType( string fullName )
       {
-         Type direct = Type.GetType( fullName, false );
-         if( direct != null )
-         {
-            return direct;
-         }
-
-         foreach( var assembly in AppDomain.CurrentDomain.GetAssemblies() )
-         {
-            Type[] types;
-            try
-            {
-               types = assembly.GetTypes();
-            }
-            catch( System.Reflection.ReflectionTypeLoadException ex )
-            {
-               var loaded = new List<Type>();
-               foreach( var t in ex.Types )
-               {
-                  if( t != null )
-                  {
-                     loaded.Add( t );
-                  }
-               }
-               types = loaded.ToArray();
-            }
-            catch
-            {
-               continue;
-            }
-
-            foreach( var t in types )
-            {
-               if( t != null && t.FullName == fullName )
-               {
-                  return t;
-               }
-            }
-         }
-
-         return null;
+         return XUnity.AutoTranslator.Plugin.Core.Utilities.TypeLookup.ResolveType( fullName );
       }
    }
 }

@@ -9,6 +9,9 @@ namespace XUnity.AutoTranslator.Plugin.Core
    {
       public event Action DirectoryUpdated;
 
+      private const int DebounceMs = 250;
+      private const int MaxFileLockWaitMs = 5000;
+
       private int _counter = 0;
       private FileSystemWatcher _watcher;
       private bool _disposed;
@@ -65,7 +68,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void Watcher_Deleted( object sender, FileSystemEventArgs e )
       {
-         _timer.Change( 1000, Timeout.Infinite );
+         _timer.Change( DebounceMs, Timeout.Infinite );
       }
 
       private void Watcher_Created( object sender, FileSystemEventArgs e )
@@ -73,12 +76,12 @@ namespace XUnity.AutoTranslator.Plugin.Core
          var fi = new FileInfo( e.FullPath );
          WaitForFile( fi );
 
-         _timer.Change( 1000, Timeout.Infinite );
+         _timer.Change( DebounceMs, Timeout.Infinite );
       }
 
       private void Watcher_Changed( object sender, FileSystemEventArgs e )
       {
-         _timer.Change( 1000, Timeout.Infinite );
+         _timer.Change( DebounceMs, Timeout.Infinite );
       }
 
       private void UpdateRaisingEvents( bool enabled )
@@ -99,9 +102,11 @@ namespace XUnity.AutoTranslator.Plugin.Core
       private void WaitForFile( FileInfo file )
       {
 
-         while( IsFileLocked( file ) )
+         int waited = 0;
+         while( IsFileLocked( file ) && waited < MaxFileLockWaitMs )
          {
-            Thread.Sleep( 100 );
+            Thread.Sleep( 50 );
+            waited += 50;
          }
       }
 

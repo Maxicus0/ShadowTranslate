@@ -106,6 +106,10 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
       public static bool AutoRelaunchOnFontRegistrationFailure;
       public static string StoryScriptMasterTextMember;
       public static string[][] ForceBypassedSdwTextPaths;
+      public static bool EnableSdwDiagnostics;
+      public static bool EnableHitchProfiler;
+      public static bool EnableVSync;
+      public static int[] SdwPrebakeFontSizes;
       public static int? OverrideFontSize;
       public static string OverrideFontTextMeshPro;
       public static string FallbackFontTextMeshPro;
@@ -113,6 +117,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
       public static bool DisableCertificateValidation;
       public static float? ResizeUILineSpacingScale;
       public static bool AutoCalculateLineSpacing;
+      public static bool EnableCyrillicSpacingFix;
+      public static bool EnableSdwLineSpacingPolicy;
+      public static float SdwTargetLineEm;
 
       public static bool TipsScreenWrapSafetyNet;
 
@@ -254,11 +261,19 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
             StoryScriptMasterTextMember = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "StoryScriptMasterTextMember", string.Empty );
             ForceBypassedSdwTextPaths = ParseForceBypassedSdwTextPaths(
                PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "ForceBypassedSdwTextPaths", "Download_SystemTips,TipsObject" ) );
+            EnableSdwDiagnostics = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableSdwDiagnostics", false );
+            EnableHitchProfiler = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableHitchProfiler", false );
+            EnableVSync = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableVSync", true );
+            SdwPrebakeFontSizes = ParsePrebakeSizes(
+               PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "SdwPrebakeFontSizes", "16,18,20,22,24,26,28,30,32,34,36,38,40,46,60" ) );
             OverrideFontSize = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "OverrideFontSize", (int?)null );
             OverrideFontTextMeshPro = string.Empty;
             FallbackFontTextMeshPro = string.Empty;
             ResizeUILineSpacingScale = null;
-            AutoCalculateLineSpacing = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "AutoCalculateLineSpacing", true );
+            AutoCalculateLineSpacing = false;
+            EnableCyrillicSpacingFix = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableCyrillicSpacingFix", false );
+            EnableSdwLineSpacingPolicy = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableSdwLineSpacingPolicy", true );
+            SdwTargetLineEm = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "SdwTargetLineEm", 1.2f );
             TipsScreenWrapSafetyNet = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "TipsScreenWrapSafetyNet", true );
             ForceUIResizing = false;
             IgnoreTextStartingWith = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "IgnoreTextStartingWith", "\\u180e;" )
@@ -292,21 +307,35 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
             DisableTextMeshProScrollInEffects = ApplicationName.Equals( "SamuraiVandalism", StringComparison.OrdinalIgnoreCase ) || UnityTypes.UguiNovelText != null;
             CacheParsedTranslations = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "CacheParsedTranslations", true );
 
-            TextureDirectory = Path.Combine( "Translation", Path.Combine( "{Lang}", "Texture" ) );
+            TextureDirectory = PluginEnvironment.Current.Preferences.GetOrDefault( "Files", "TextureDirectory", Path.Combine( "Translation", Path.Combine( "{Lang}", "Texture" ) ) );
             TexturesPath = Path.Combine( PluginEnvironment.Current.TranslationPath, Settings.TextureDirectory ).Parameterize();
 
-            EnableTextureTranslation = Directory.Exists( TexturesPath );
-            EnableTextureDumping = false;
-            EnableTextureToggling = false;
-            EnableTextureScanOnSceneLoad = false;
-            EnableSpriteRendererHooking = false;
-            LoadUnmodifiedTextures = false;
-            DetectDuplicateTextureNames = false;
-            DuplicateTextureNames = new HashSet<string>();
-            EnableLegacyTextureLoading = false;
-            TextureHashGenerationStrategy = TextureHashGenerationStrategy.FromImageName;
-            CacheTexturesInMemory = false;
-            EnableSpriteHooking = false;
+            EnableTextureTranslation = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableTextureTranslation", true );
+            EnableTextureDumping = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableTextureDumping", false );
+            EnableTextureToggling = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableTextureToggling", true );
+            EnableTextureScanOnSceneLoad = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableTextureScanOnSceneLoad", true );
+            EnableSpriteRendererHooking = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableSpriteRendererHooking", true );
+            LoadUnmodifiedTextures = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "LoadUnmodifiedTextures", false );
+            DetectDuplicateTextureNames = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "DetectDuplicateTextureNames", false );
+            DuplicateTextureNames = new HashSet<string>(
+               ( PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "DuplicateTextureNames", string.Empty ) ?? string.Empty )
+                  .Split( new[] { ';' }, StringSplitOptions.RemoveEmptyEntries ) );
+            EnableLegacyTextureLoading = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableLegacyTextureLoading", false );
+            TextureHashGenerationStrategy = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "TextureHashGenerationStrategy", TextureHashGenerationStrategy.FromImageName );
+            CacheTexturesInMemory = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "CacheTexturesInMemory", true );
+            EnableSpriteHooking = PluginEnvironment.Current.Preferences.GetOrDefault( "Texture", "EnableSpriteHooking", true );
+
+            if( EnableTextureTranslation || EnableTextureDumping )
+            {
+               try
+               {
+                  Directory.CreateDirectory( TexturesPath );
+               }
+               catch( Exception e )
+               {
+                  XuaLogger.AutoTranslator.Error( e, "Could not create texture directory: " + TexturesPath );
+               }
+            }
 
             PreferredStoragePath = Path.Combine( "Translation", Path.Combine( "{Lang}", "RedirectedResources" ) );
             EnableTextAssetRedirector = false;
@@ -383,6 +412,22 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
 
             IsShutdown = true;
          }
+      }
+
+      private static int[] ParsePrebakeSizes( string raw )
+      {
+         var result = new List<int>();
+         if( !string.IsNullOrEmpty( raw ) )
+         {
+            foreach( var part in raw.Split( new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries ) )
+            {
+               if( int.TryParse( part.Trim(), out var size ) && size > 0 && size < 400 && !result.Contains( size ) )
+               {
+                  result.Add( size );
+               }
+            }
+         }
+         return result.ToArray();
       }
 
       private static string[][] ParseForceBypassedSdwTextPaths( string raw )

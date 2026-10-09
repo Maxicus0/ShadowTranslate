@@ -49,22 +49,58 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
       private static string ResolveNativeReplacementBundleRelativePath()
       {
          const string DefaultRelativePath = "UserLibs/sdw_fonts";
+         const string FileName = "sdw_fonts";
 
          var gameRoot = Paths.GameRoot;
          try
          {
-            var match = Directory.EnumerateFiles( gameRoot, "sdw_fonts", SearchOption.AllDirectories ).FirstOrDefault();
-            if( match != null )
+            var candidates = new[]
             {
-               XuaLogger.AutoTranslator.Debug( "FontCache: located sdw_fonts bundle by scanning '" + gameRoot + "' -> '" + match + "'." );
-               return Path.GetRelativePath( gameRoot, match );
+               Path.Combine( "UserLibs", FileName ),
+               Path.Combine( Path.Combine( "BepInEx", "UserLibs" ), FileName ),
+               Path.Combine( Path.Combine( Path.Combine( "BepInEx", "plugins" ), "XUnity.AutoTranslator" ), FileName ),
+               Path.Combine( Path.Combine( "BepInEx", "plugins" ), FileName ),
+               Path.Combine( "BepInEx", FileName ),
+               FileName,
+            };
+            foreach( var candidate in candidates )
+            {
+               if( File.Exists( Path.Combine( gameRoot, candidate ) ) )
+               {
+                  XuaLogger.AutoTranslator.Debug( "FontCache: found sdw_fonts bundle at well-known location '" + candidate + "'." );
+                  return candidate;
+               }
             }
 
-            XuaLogger.AutoTranslator.Warn( "FontCache: scanned '" + gameRoot + "' but found no file named 'sdw_fonts'; defaulting to '" + DefaultRelativePath + "'." );
+            var skipDirs = new HashSet<string>( StringComparer.OrdinalIgnoreCase ) { "cache", "interop", "unity-libs", "core", "il2cpp_etc", "dotnet", "mono" };
+            var queue = new Queue<KeyValuePair<string, int>>();
+            var bepInEx = Path.Combine( gameRoot, "BepInEx" );
+            queue.Enqueue( new KeyValuePair<string, int>( Directory.Exists( bepInEx ) ? bepInEx : gameRoot, 0 ) );
+            int visited = 0;
+            while( queue.Count > 0 && visited < 400 )
+            {
+               var current = queue.Dequeue();
+               visited++;
+               var file = Path.Combine( current.Key, FileName );
+               if( File.Exists( file ) )
+               {
+                  XuaLogger.AutoTranslator.Debug( "FontCache: located sdw_fonts bundle by bounded search -> '" + file + "'." );
+                  return Path.GetRelativePath( gameRoot, file );
+               }
+
+               if( current.Value >= 4 ) continue;
+               foreach( var dir in Directory.GetDirectories( current.Key ) )
+               {
+                  if( skipDirs.Contains( Path.GetFileName( dir ) ) ) continue;
+                  queue.Enqueue( new KeyValuePair<string, int>( dir, current.Value + 1 ) );
+               }
+            }
+
+            XuaLogger.AutoTranslator.Info( "FontCache: no 'sdw_fonts' file found near '" + gameRoot + "'; will try the bundle embedded in the DLL (if any), otherwise native fonts stay untouched." );
          }
          catch( Exception e )
          {
-            XuaLogger.AutoTranslator.Warn( e, "FontCache: error while scanning '" + gameRoot + "' for the sdw_fonts bundle; defaulting to '" + DefaultRelativePath + "'." );
+            XuaLogger.AutoTranslator.Warn( e, "FontCache: error while searching for the sdw_fonts bundle; defaulting to '" + DefaultRelativePath + "'." );
          }
 
          return DefaultRelativePath;
@@ -99,6 +135,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
       {
          EnsureNativeReplacementBundleFontsLoaded();
          return NativeReplacementBundleFonts.TryGetValue( nativeFontName, out font ) && font != null;
+      }
+
+      public static void Preload()
+      {
+         EnsureNativeReplacementBundleFontsLoaded();
       }
 
       public static bool HasNativeReplacementBundleFonts

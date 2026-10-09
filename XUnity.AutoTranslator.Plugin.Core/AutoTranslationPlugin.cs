@@ -762,7 +762,10 @@ namespace XUnity.AutoTranslator.Plugin.Core
                   var end = Time.realtimeSinceStartup;
                   var delta = Math.Round( end - start, 2 );
 
-                  XuaLogger.AutoTranslator.Debug( $"Update SpriteRenderers caused by {_requireSpriteRendererCheckCausedBy} component (took " + delta + " seconds)" );
+                  if( delta >= 0.05 )
+                  {
+                     XuaLogger.AutoTranslator.Debug( $"Update SpriteRenderers caused by {_requireSpriteRendererCheckCausedBy} component (took " + delta + " seconds)" );
+                  }
                }
                finally
                {
@@ -787,6 +790,14 @@ namespace XUnity.AutoTranslator.Plugin.Core
       }
 
       internal string Hook_TextChanged_WithResult( object ui, string text, bool onEnable )
+      {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.TextChangedWithResult" ) )
+         {
+            return Hook_TextChanged_WithResultCore( ui, text, onEnable );
+         }
+      }
+
+      private string Hook_TextChanged_WithResultCore( object ui, string text, bool onEnable )
       {
          try
          {
@@ -831,6 +842,14 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       internal void Hook_TextChanged( object ui, bool onEnable )
       {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.TextChanged" ) )
+         {
+            Hook_TextChangedCore( ui, onEnable );
+         }
+      }
+
+      private void Hook_TextChangedCore( object ui, bool onEnable )
+      {
          if( _textHooksEnabled && !_temporarilyDisabled )
          {
             try
@@ -843,9 +862,18 @@ namespace XUnity.AutoTranslator.Plugin.Core
                   info.TextCache = CallOrigin.TextCache;
                }
 
-               if( !Hooks.SdwTextCustomHook.TryApplyPatternTranslation( ui, info, isComponentActive ) )
+               bool patternApplied;
+               using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "PatternTranslate" ) )
                {
-                  TranslateOrQueueWebJob( ui, null, isComponentActive, info );
+                  patternApplied = Hooks.SdwTextCustomHook.TryApplyPatternTranslation( ui, info, isComponentActive );
+               }
+
+               if( !patternApplied )
+               {
+                  using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "TranslateOrQueue" ) )
+                  {
+                     TranslateOrQueueWebJob( ui, null, isComponentActive, info );
+                  }
                }
             }
             catch( Exception e )
@@ -971,6 +999,11 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void SetText( object ui, string text, bool isTranslated, string originalText, TextTranslationInfo info )
       {
+         if( ui.IsDestroyedUnityObject() )
+         {
+            return;
+         }
+
          if( !info?.IsCurrentlySettingText ?? true )
          {
             try
@@ -1093,6 +1126,14 @@ namespace XUnity.AutoTranslator.Plugin.Core
       }
 
       private void HandleImage( object source, ref Sprite sprite, ref Texture2D texture, bool isPrefixHooked )
+      {
+         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.Image" ) )
+         {
+            HandleImageCore( source, ref sprite, ref texture, isPrefixHooked );
+         }
+      }
+
+      private void HandleImageCore( object source, ref Sprite sprite, ref Texture2D texture, bool isPrefixHooked )
       {
          if( Settings.EnableTextureDumping )
          {
@@ -1229,6 +1270,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                         }
                         else
                         {
+                           if( Settings.EnableTextureToggling ) tti.EnsureOriginalData();
                            texture.LoadImageEx( newData, translatedImage.ImageFormat, null );
                            changedImage = true;
                         }
@@ -2496,7 +2538,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                   XuaLogger.AutoTranslator.Debug( $"Parsed translation cached: '{context.Result.OriginalText}' => '{translation}'" );
 
                TextCache.AddTranslationToCache( context.Result.OriginalText, translation, false, TranslationType.Full, scope );
-               context.Endpoint.AddTranslationToCache( context.Result.OriginalText, translation );
+               context.Endpoint?.AddTranslationToCache( context.Result.OriginalText, translation );
             }
          }
          catch( Exception e )
@@ -2803,6 +2845,8 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
             TranslationManager.Update();
 
+            EnforceVSync();
+
             if( frameCount % 36000 == 0 && CachedKeys.Count > 0 )
             {
                CachedKeys.Clear();
@@ -2843,6 +2887,29 @@ namespace XUnity.AutoTranslator.Plugin.Core
          catch( Exception e )
          {
             XuaLogger.AutoTranslator.Error( e, "An error occurred in Update callback. " );
+         }
+      }
+
+      private bool _vSyncErrorLogged;
+
+      private void EnforceVSync()
+      {
+         if( !Settings.EnableVSync ) return;
+
+         try
+         {
+            if( QualitySettings.vSyncCount != 1 )
+            {
+               QualitySettings.vSyncCount = 1;
+            }
+         }
+         catch( Exception e )
+         {
+            if( !_vSyncErrorLogged )
+            {
+               _vSyncErrorLogged = true;
+               XuaLogger.AutoTranslator.Warn( e, "Could not enforce vertical sync." );
+            }
          }
       }
 
@@ -3155,6 +3222,37 @@ namespace XUnity.AutoTranslator.Plugin.Core
          return new UntranslatedText( originalText, isFromSpammingComponent, !isFromSpammingComponent, Settings.FromLanguageUsesWhitespaceBetweenWords, true, Settings.TemplateAllNumberAway );
       }
 
+      private int _reloadGeneration;
+      private const int ReloadFrameBudgetMs = 4;
+
+      private IEnumerator RunReloadBatched<T>( List<T> items, int generation, Action<T> action )
+      {
+         var sw = Stopwatch.StartNew();
+         for( int i = 0; i < items.Count; i++ )
+         {
+            if( generation != _reloadGeneration )
+            {
+               yield break;
+            }
+
+            try
+            {
+               action( items[ i ] );
+            }
+            catch( Exception e )
+            {
+               XuaLogger.AutoTranslator.Warn( e, "An error occurred while re-applying translations to a component." );
+            }
+
+            if( sw.ElapsedMilliseconds >= ReloadFrameBudgetMs )
+            {
+               yield return null;
+               sw.Reset();
+               sw.Start();
+            }
+         }
+      }
+
       private void ReloadTranslations()
       {
          try
@@ -3164,9 +3262,17 @@ namespace XUnity.AutoTranslator.Plugin.Core
             LoadTranslations( true );
 
             var context = new TextureReloadContext();
-            foreach( var kvp in ExtensionDataHelper.GetAllRegisteredObjects() )
+            var generation = ++_reloadGeneration;
+            CoroutineHelper.Start( RunReloadBatched( ExtensionDataHelper.GetAllRegisteredObjects().ToList(), generation, kvp =>
             {
                var ui = kvp.Key;
+
+               if( ui.IsDestroyedUnityObject() )
+               {
+                  ExtensionDataHelper.Remove( ui );
+                  return;
+               }
+
                try
                {
                   var tti = kvp.Value as TextTranslationInfo;
@@ -3184,10 +3290,18 @@ namespace XUnity.AutoTranslator.Plugin.Core
                            var key = GetCacheKey( originalText, false );
                            if( TextCache.TryGetTranslation( key, true, false, scope, out string translatedText ) )
                            {
+                              var untemplated = key.Untemplate( translatedText );
+
+                              if( tti.IsTranslated && !ResizeCache.HasAnyResizeCommands && string.Equals( tti.TranslatedText, untemplated, StringComparison.Ordinal ) )
+                              {
+                                 updated = true;
+                                 return;
+                              }
+
                               tti.UnresizeUI( ui );
-                              SetTranslatedText( kvp.Key, key.Untemplate( translatedText ), null, tti );
+                              SetTranslatedText( kvp.Key, untemplated, null, tti );
                               updated = true;
-                              continue;
+                              return;
                            }
                            else
                            {
@@ -3202,7 +3316,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                                        tti.UnresizeUI( ui );
                                        SetTranslatedText( ui, translation, null, tti );
                                        updated = true;
-                                       continue;
+                                       return;
                                     }
                                  }
                               }
@@ -3217,7 +3331,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                                        tti.UnresizeUI( ui );
                                        SetTranslatedText( ui, translation, null, tti );
                                        updated = true;
-                                       continue;
+                                       return;
                                     }
                                  }
                               }
@@ -3232,7 +3346,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                                        tti.UnresizeUI( ui );
                                        SetTranslatedText( ui, translation, null, tti );
                                        updated = true;
-                                       continue;
+                                       return;
                                     }
                                  }
                               }
@@ -3258,7 +3372,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                {
                   ExtensionDataHelper.Remove( ui );
                }
-            }
+            } ) );
          }
          catch( Exception e )
          {

@@ -65,6 +65,42 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          }
       }
 
+      private static bool TryReadEmbeddedFontBundle( out byte[] bytes, out string resourceName )
+      {
+         bytes = null;
+         resourceName = null;
+         try
+         {
+            var asm = typeof( FontHelper ).Assembly;
+            foreach( var name in asm.GetManifestResourceNames() )
+            {
+               if( name.IndexOf( "sdw_fonts", StringComparison.OrdinalIgnoreCase ) < 0 ) continue;
+
+               using( var stream = asm.GetManifestResourceStream( name ) )
+               {
+                  if( stream == null || stream.Length == 0 ) continue;
+                  var buffer = new byte[ stream.Length ];
+                  int read = 0;
+                  while( read < buffer.Length )
+                  {
+                     int n = stream.Read( buffer, read, buffer.Length - read );
+                     if( n <= 0 ) break;
+                     read += n;
+                  }
+                  if( read != buffer.Length ) continue;
+                  bytes = buffer;
+                  resourceName = name;
+                  return true;
+               }
+            }
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Warn( e, "FontHelper: failed to read an embedded font bundle resource." );
+         }
+         return false;
+      }
+
       public static Dictionary<string, Font> LoadNativeReplacementFontsFromBundle( string assetBundleRelativePath )
       {
          var result = new Dictionary<string, Font>( StringComparer.OrdinalIgnoreCase );
@@ -72,27 +108,34 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          var bundlePath = Path.Combine( Paths.GameRoot, assetBundleRelativePath );
          var diagStopwatch = Stopwatch.StartNew();
 
-         if( !File.Exists( bundlePath ) )
+         byte[] bundleBytes = null;
+         if( File.Exists( bundlePath ) )
          {
-            XuaLogger.AutoTranslator.Info( "FontHelper: no native-replacement font bundle found at '" + bundlePath + "' - staying on the OS-registration path (NativeFontReplacements.cs)." );
-            return result;
+            try
+            {
+               bundleBytes = File.ReadAllBytes( bundlePath );
+               XuaLogger.AutoTranslator.Info( "FontHelper: read native-replacement font bundle from disk: '" + bundlePath + "' (" + bundleBytes.Length + " bytes)." );
+            }
+            catch( Exception e )
+            {
+               XuaLogger.AutoTranslator.Error( e, "FontHelper: failed to read native-replacement font bundle from disk: " + bundlePath + " - trying the copy embedded in the DLL instead." );
+               DumpExceptionChain( "File.ReadAllBytes('" + bundlePath + "')", e );
+               bundleBytes = null;
+            }
          }
 
-         XuaLogger.AutoTranslator.Debug( "FontHelper: loading native-replacement fonts from asset bundle: " + bundlePath );
-         XuaLogger.AutoTranslator.Debug( "FontHelper[DIAG]: entering LoadNativeReplacementFontsFromBundle for '" + bundlePath + "'." );
-
-         byte[] bundleBytes;
-         try
+         if( bundleBytes == null )
          {
-            XuaLogger.AutoTranslator.Debug( "FontHelper[DIAG]: File.ReadAllBytes starting for '" + bundlePath + "' (plain managed IO, no Il2Cpp types touched)." );
-            bundleBytes = File.ReadAllBytes( bundlePath );
-            XuaLogger.AutoTranslator.Debug( "FontHelper[DIAG]: File.ReadAllBytes succeeded: " + bundleBytes.Length + " byte(s) read from '" + bundlePath + "'." );
-         }
-         catch( Exception e )
-         {
-            XuaLogger.AutoTranslator.Error( e, "FontHelper: failed to read native-replacement font bundle from disk: " + bundlePath );
-            DumpExceptionChain( "File.ReadAllBytes('" + bundlePath + "')", e );
-            return result;
+            if( TryReadEmbeddedFontBundle( out bundleBytes, out var embeddedName ) )
+            {
+               bundlePath = "<embedded:" + embeddedName + ">";
+               XuaLogger.AutoTranslator.Info( "FontHelper: no usable sdw_fonts file on disk - using the font bundle embedded in the plugin DLL ('" + embeddedName + "', " + bundleBytes.Length + " bytes)." );
+            }
+            else
+            {
+               XuaLogger.AutoTranslator.Warn( "FontHelper: no native-replacement font bundle on disk ('" + bundlePath + "') and none embedded in the plugin DLL (no manifest resource named '*sdw_fonts*' - add the bundle as an <EmbeddedResource> to embed it). Native fonts will be left untouched." );
+               return result;
+            }
          }
 
          AssetBundle bundle;
@@ -208,8 +251,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
          }
          catch( Exception e )
          {
-            XuaLogger.AutoTranslator.Warn( e, "FontHelper[DIAG]: untyped AssetBundle.LoadAllAssetsAsync() itself threw for '" + bundlePath + "' - see chain below." );
-            DumpExceptionChain( "AssetBundle.LoadAllAssetsAsync() [untyped] on '" + bundlePath + "'", e );
+            XuaLogger.AutoTranslator.Info( "FontHelper: AssetBundle.LoadAllAssetsAsync() is not usable on this runtime (" + e.GetType().Name + ") - loading fonts from the bundle by name instead." );
+            if( Settings.EnableSdwDiagnostics )
+            {
+               DumpExceptionChain( "AssetBundle.LoadAllAssetsAsync() [untyped] on '" + bundlePath + "'", e );
+            }
             return matched;
          }
 

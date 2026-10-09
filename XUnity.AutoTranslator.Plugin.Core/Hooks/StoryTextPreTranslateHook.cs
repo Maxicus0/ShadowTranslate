@@ -274,124 +274,12 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static System.Collections.Generic.List<System.Type> FindConcreteImplementers( System.Type interfaceType )
       {
-         var results = new System.Collections.Generic.List<System.Type>();
-         if( interfaceType == null )
-         {
-            return results;
-         }
-
-         foreach( var assembly in System.AppDomain.CurrentDomain.GetAssemblies() )
-         {
-            System.Type[] types;
-            try
-            {
-               types = assembly.GetTypes();
-            }
-            catch( System.Reflection.ReflectionTypeLoadException ex )
-            {
-               var loaded = new System.Collections.Generic.List<System.Type>();
-               foreach( var t in ex.Types )
-               {
-                  if( t != null )
-                  {
-                     loaded.Add( t );
-                  }
-               }
-               types = loaded.ToArray();
-            }
-            catch
-            {
-               continue;
-            }
-
-            foreach( var type in types )
-            {
-               if( type == null || type.IsInterface || type.IsAbstract )
-               {
-                  continue;
-               }
-
-               if( interfaceType.IsAssignableFrom( type ) )
-               {
-                  results.Add( type );
-               }
-            }
-         }
-
-         return results;
+         return XUnity.AutoTranslator.Plugin.Core.Utilities.TypeLookup.FindConcreteImplementers( interfaceType );
       }
 
-      private static System.Collections.Generic.Dictionary<string, System.Type> ResolveTypesByName(
-         params string[] simpleNames )
+      private static System.Collections.Generic.Dictionary<string, System.Type> ResolveTypesByName( params string[] simpleNames )
       {
-         var result = new System.Collections.Generic.Dictionary<string, System.Type>();
-         var remaining = new System.Collections.Generic.HashSet<string>( simpleNames );
-
-         foreach( var name in simpleNames )
-         {
-            System.Type direct = System.Type.GetType( name, false );
-            if( direct != null )
-            {
-               result[ name ] = direct;
-               remaining.Remove( name );
-            }
-         }
-
-         if( remaining.Count == 0 )
-         {
-            return result;
-         }
-
-         foreach( var assembly in System.AppDomain.CurrentDomain.GetAssemblies() )
-         {
-            if( remaining.Count == 0 )
-            {
-               break;
-            }
-
-            System.Type[] types;
-            try
-            {
-               types = assembly.GetTypes();
-            }
-            catch( System.Reflection.ReflectionTypeLoadException ex )
-            {
-               var loaded = new System.Collections.Generic.List<System.Type>();
-               foreach( var t in ex.Types )
-               {
-                  if( t != null )
-                  {
-                     loaded.Add( t );
-                  }
-               }
-               types = loaded.ToArray();
-            }
-            catch
-            {
-               continue;
-            }
-
-            foreach( var type in types )
-            {
-               if( type == null )
-               {
-                  continue;
-               }
-
-               if( remaining.Contains( type.FullName ) )
-               {
-                  result[ type.FullName ] = type;
-                  remaining.Remove( type.FullName );
-               }
-               else if( remaining.Contains( type.Name ) )
-               {
-                  result[ type.Name ] = type;
-                  remaining.Remove( type.Name );
-               }
-            }
-         }
-
-         return result;
+         return XUnity.AutoTranslator.Plugin.Core.Utilities.TypeLookup.ResolveTypesByName( simpleNames );
       }
 
       private static void PlayAsObservable_Prefix( object __instance, ref string text )
@@ -661,13 +549,13 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
-      internal static void ClearCachedBoxWidths()
-      {
-         _cachedBoxWidths.Clear();
-      }
-
       private static void LogLayoutAncestryOnce( RectTransform rectTransform )
       {
+         if( !Settings.EnableSdwDiagnostics )
+         {
+            return;
+         }
+
          try
          {
             if( rectTransform == null )
@@ -1086,6 +974,14 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
+      private sealed class SafetyNetCacheEntry
+      {
+         public bool Match;
+         public int Frame;
+      }
+
+      private static readonly Dictionary<int, SafetyNetCacheEntry> _safetyNetCache = new Dictionary<int, SafetyNetCacheEntry>();
+
       internal static void TryApplyWrapSafetyNet( object textComponent )
       {
          if( !Settings.TipsScreenWrapSafetyNet )
@@ -1110,9 +1006,22 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return;
          }
 
-         var root = component.transform != null ? component.transform.root : null;
-         var rootName = root != null ? root.name : null;
-         if( string.IsNullOrEmpty( rootName ) || rootName.IndexOf( "SystemTips", StringComparison.Ordinal ) < 0 )
+         int safetyId = component.GetInstanceID();
+         int safetyFrame = UnityEngine.Time.frameCount;
+         if( !_safetyNetCache.TryGetValue( safetyId, out var safetyEntry ) || ( !safetyEntry.Match && safetyFrame - safetyEntry.Frame >= 60 ) )
+         {
+            var root = component.transform != null ? component.transform.root : null;
+            var rootName = root != null ? root.name : null;
+            bool isTips = !string.IsNullOrEmpty( rootName ) && rootName.IndexOf( "SystemTips", StringComparison.Ordinal ) >= 0;
+            if( _safetyNetCache.Count >= 4096 )
+            {
+               _safetyNetCache.Clear();
+            }
+            safetyEntry = new SafetyNetCacheEntry { Match = isTips, Frame = safetyFrame };
+            _safetyNetCache[ safetyId ] = safetyEntry;
+         }
+
+         if( !safetyEntry.Match )
          {
             return;
          }
@@ -1214,14 +1123,90 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return sb.ToString();
       }
 
+      public static void Preload()
+      {
+         try
+         {
+            lock( _loadSync )
+            {
+               if( _loadStarted ) return;
+               _loadStarted = true;
+            }
+
+            System.Threading.ThreadPool.QueueUserWorkItem( _ =>
+            {
+               try
+               {
+                  LoadDictionaryCore();
+               }
+               catch( Exception e )
+               {
+                  _loadError = e;
+               }
+               finally
+               {
+                  _loadDone.Set();
+               }
+            } );
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Warn( e, "StoryTextPreTranslateHook: preload failed." );
+         }
+      }
+
+      private static readonly object _loadSync = new object();
+      private static readonly System.Threading.ManualResetEventSlim _loadDone = new System.Threading.ManualResetEventSlim( false );
+      private static bool _loadStarted;
+      private static Exception _loadError;
+      private static string _loadSummary;
+
       private static void EnsureDictionaryLoaded()
       {
          string path = Settings.StoryTranslationFilePath;
 
-         if( _dictionaryLoaded && string.Equals( path, _loadedFromPath, StringComparison.OrdinalIgnoreCase ) )
+         if( _dictionaryLoaded && _loadDone.IsSet && string.Equals( path, _loadedFromPath, StringComparison.OrdinalIgnoreCase ) )
          {
             return;
          }
+
+         bool startedByUs = false;
+         lock( _loadSync )
+         {
+            if( !_loadStarted )
+            {
+               _loadStarted = true;
+               startedByUs = true;
+            }
+         }
+
+         if( startedByUs )
+         {
+            try { LoadDictionaryCore(); }
+            finally { _loadDone.Set(); }
+         }
+         else
+         {
+            _loadDone.Wait();
+         }
+
+         if( _loadError != null )
+         {
+            XuaLogger.AutoTranslator.Warn( _loadError, "StoryTextPreTranslateHook: failed to load the story dictionary." );
+            _loadError = null;
+         }
+
+         var summary = _loadSummary;
+         if( summary != null )
+         {
+            _loadSummary = null;
+            XuaLogger.AutoTranslator.Info( summary );
+         }
+      }
+
+      private static void LoadDictionaryCore()
+      {
+         string path = Settings.StoryTranslationFilePath;
 
          _translations.Clear();
          _translatedValues.Clear();
@@ -1229,18 +1214,45 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          if( string.IsNullOrEmpty( path ) || !File.Exists( path ) )
          {
-            XuaLogger.AutoTranslator.Warn( "StoryTextPreTranslateHook: translation file not found at '" + path + "'; story text will pass through untranslated at the source until it exists." );
+            _loadSummary = "StoryTextPreTranslateHook: translation file not found at '" + path + "'; story text will pass through untranslated at the source until it exists.";
             _dictionaryLoaded = true;
             _loadedFromPath = path;
             return;
          }
 
+         _dictionaryLoaded = true;
+         _loadedFromPath = path;
+
          int loaded = 0, skipped = 0;
-         var rawText = File.ReadAllText( path, Encoding.UTF8 );
-         var rawLines = rawText.Split( new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries );
+         string[] rawLines;
+         try
+         {
+            var rawText = File.ReadAllText( path, Encoding.UTF8 );
+            rawLines = rawText.Split( new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries );
+         }
+         catch( Exception e )
+         {
+            _loadError = e;
+            return;
+         }
+
+         _translations.EnsureCapacity( rawLines.Length );
+         _normalizedTranslations.EnsureCapacity( rawLines.Length );
+         _translatedValues.EnsureCapacity( rawLines.Length );
+
          foreach( var rawLine in rawLines )
          {
-            var kvp = TextHelper.ReadTranslationLineAndDecode( rawLine );
+            string[] kvp;
+            try
+            {
+               kvp = TextHelper.ReadTranslationLineAndDecode( rawLine );
+            }
+            catch
+            {
+               skipped++;
+               continue;
+            }
+
             if( kvp == null )
             {
                skipped++;
@@ -1279,10 +1291,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             loaded++;
          }
 
-         XuaLogger.AutoTranslator.Info( $"StoryTextPreTranslateHook: Loaded {loaded} story translation(s) from '{path}' ({skipped} skipped as untranslated/malformed/regex)." );
-
-         _dictionaryLoaded = true;
-         _loadedFromPath = path;
+         _loadSummary = $"StoryTextPreTranslateHook: Loaded {loaded} story translation(s) from '{path}' ({skipped} skipped as untranslated/malformed/regex).";
       }
    }
 }

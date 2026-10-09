@@ -42,7 +42,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks.UGUI
       {
          if( SdwTextCustomHook.IsKnownSdwTextInstance( __instance ) )
          {
-            XuaLogger.AutoTranslator.Debug( $"[SDWTEXT-SKIP] Text_text_Hook: skipped '{__instance.GetPath()}' - already marked as a known SdwText instance." );
             return;
          }
 
@@ -100,7 +99,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks.UGUI
       {
          if( SdwTextCustomHook.ShouldSkipOnEnableDispatch( __instance ) )
          {
-            XuaLogger.AutoTranslator.Debug( $"[SDWTEXT-SKIP] Text_OnEnable_Hook: skipped '{__instance.GetPath()}' - known SdwText instance already showing its translation." );
             return;
          }
 

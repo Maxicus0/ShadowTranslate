@@ -56,12 +56,18 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
          void Update()
          {
-            Plugin.Update();
+            using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Plugin.Update" ) )
+            {
+               Plugin.Update();
+            }
          }
 
          void OnGUI()
          {
-            Plugin.OnGUI();
+            using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Plugin.OnGUI" ) )
+            {
+               Plugin.OnGUI();
+            }
          }
 
          void Start()

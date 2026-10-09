@@ -16,6 +16,15 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       private static System.Reflection.PropertyInfo _logEntryTextProperty;
       private static System.Reflection.PropertyInfo _logItemTextComponentProperty;
 
+      private sealed class BacklogTextWriter
+      {
+         public System.Reflection.MethodInfo SetText;
+         public System.Reflection.PropertyInfo TextProperty;
+      }
+
+      private static readonly System.Collections.Generic.Dictionary<System.Type, BacklogTextWriter> _textWriterCache =
+         new System.Collections.Generic.Dictionary<System.Type, BacklogTextWriter>();
+
       private static readonly System.Collections.Generic.Dictionary<string, System.Type> _nativeTypeCache =
          new System.Collections.Generic.Dictionary<string, System.Type>();
 
@@ -71,77 +80,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
-      private static System.Collections.Generic.Dictionary<string, System.Type> ResolveTypesByName(
-         params string[] simpleNames )
+      private static System.Collections.Generic.Dictionary<string, System.Type> ResolveTypesByName( params string[] simpleNames )
       {
-         var result = new System.Collections.Generic.Dictionary<string, System.Type>();
-         var remaining = new System.Collections.Generic.HashSet<string>( simpleNames );
-
-         foreach( var name in simpleNames )
-         {
-            System.Type direct = System.Type.GetType( name, false );
-            if( direct != null )
-            {
-               result[ name ] = direct;
-               remaining.Remove( name );
-            }
-         }
-
-         if( remaining.Count == 0 )
-         {
-            return result;
-         }
-
-         foreach( var assembly in System.AppDomain.CurrentDomain.GetAssemblies() )
-         {
-            if( remaining.Count == 0 )
-            {
-               break;
-            }
-
-            System.Type[] types;
-            try
-            {
-               types = assembly.GetTypes();
-            }
-            catch( System.Reflection.ReflectionTypeLoadException ex )
-            {
-               var loaded = new System.Collections.Generic.List<System.Type>();
-               foreach( var t in ex.Types )
-               {
-                  if( t != null )
-                  {
-                     loaded.Add( t );
-                  }
-               }
-               types = loaded.ToArray();
-            }
-            catch
-            {
-               continue;
-            }
-
-            foreach( var type in types )
-            {
-               if( type == null )
-               {
-                  continue;
-               }
-
-               if( remaining.Contains( type.FullName ) )
-               {
-                  result[ type.FullName ] = type;
-                  remaining.Remove( type.FullName );
-               }
-               else if( remaining.Contains( type.Name ) )
-               {
-                  result[ type.Name ] = type;
-                  remaining.Remove( type.Name );
-               }
-            }
-         }
-
-         return result;
+         return XUnity.AutoTranslator.Plugin.Core.Utilities.TypeLookup.ResolveTypesByName( simpleNames );
       }
 
       private static void Configure_Postfix( object __instance, object logEntry )
@@ -208,17 +149,26 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             var info = textComponent.GetOrCreateTextTranslationInfo();
             info?.SetTranslatedText( translated );
 
-            System.Reflection.MethodInfo setTextMethod = HarmonyLib.AccessTools.Method(
-               componentType, "SetText", new System.Type[] { typeof( string ) } );
-
-            if( setTextMethod != null )
+            if( !_textWriterCache.TryGetValue( componentType, out var writer ) )
             {
-               setTextMethod.Invoke( textComponent, new object[] { translated } );
+               writer = new BacklogTextWriter
+               {
+                  SetText = HarmonyLib.AccessTools.Method( componentType, "SetText", new System.Type[] { typeof( string ) } ),
+               };
+               if( writer.SetText == null )
+               {
+                  writer.TextProperty = HarmonyLib.AccessTools.Property( componentType, "text" );
+               }
+               _textWriterCache[ componentType ] = writer;
+            }
+
+            if( writer.SetText != null )
+            {
+               writer.SetText.Invoke( textComponent, new object[] { translated } );
             }
             else
             {
-               System.Reflection.PropertyInfo textProperty = HarmonyLib.AccessTools.Property( componentType, "text" );
-               textProperty?.SetValue( textComponent, translated, null );
+               writer.TextProperty?.SetValue( textComponent, translated, null );
             }
          }
          catch( Exception e )

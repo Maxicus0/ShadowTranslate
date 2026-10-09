@@ -55,7 +55,6 @@ namespace XUnity.AutoTranslator.Plugin.Core.Extensions
       private static readonly string MarkAsChangedMethodName = "MarkAsChanged";
       private static readonly string SupportRichTextPropertyName = "supportRichText";
       private static readonly string RichTextPropertyName = "richText";
-      private static GameObject[] _objects = new GameObject[ 128 ];
       private static readonly string XuaIgnore = "XUAIGNORE";
       private static readonly string XuaIgnoreTree = "XUAIGNORETREE";
       private static List<IPropertyMover> TexturePropertyMovers;
@@ -163,6 +162,18 @@ namespace XUnity.AutoTranslator.Plugin.Core.Extensions
          }
 
          return false;
+      }
+
+      public static bool IsDestroyedUnityObject( this object ui )
+      {
+         try
+         {
+            return ui is UnityEngine.Object uo && !uo;
+         }
+         catch( Exception )
+         {
+            return true;
+         }
       }
 
       public static bool IsComponentActive( this object ui )
@@ -561,25 +572,21 @@ namespace XUnity.AutoTranslator.Plugin.Core.Extensions
       public static string[] GetPathSegments( this object obj )
       {
          var go = GetAssociatedGameObject( obj );
-
-         int i = 0;
-         int j = 0;
-
-         _objects[ i++ ] = go;
-         while( go.transform.parent != null )
+         if( go == null )
          {
-            go = go.transform.parent.gameObject;
-            _objects[ i++ ] = go;
+            return new string[ 0 ];
          }
 
-         var result = new string[ i ];
-         while( --i >= 0 )
+         var names = new System.Collections.Generic.List<string>( 8 );
+         var current = go.transform;
+         while( current != null )
          {
-            result[ j++ ] = _objects[ i ].name;
-            _objects[ i ] = null;
+            names.Add( current.name );
+            current = current.parent;
          }
 
-         return result;
+         names.Reverse();
+         return names.ToArray();
       }
 
       public static string GetPath( this object obj )
