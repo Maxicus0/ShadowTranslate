@@ -44,6 +44,17 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       private static readonly Dictionary<int, float> _cachedBoxWidths =
          new Dictionary<int, float>();
 
+      private static float _lastGoodStoryBoxWidth;
+
+      private static bool HasLetterOrDigit( string token )
+      {
+         foreach( var ch in token )
+         {
+            if( char.IsLetterOrDigit( ch ) ) return true;
+         }
+         return false;
+      }
+
       private static readonly HashSet<int> _loggedAncestryFor = new HashSet<int>();
 
       private static System.Reflection.PropertyInfo _textValuePropertyInfo;
@@ -821,7 +832,14 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          int rectId = rectTransform.GetInstanceID();
          float boxWidth;
 
-         if( _cachedBoxWidths.TryGetValue( rectId, out var cachedWidth ) )
+         float minPlausibleWidth = Math.Max( 100f, ReadFontSize( textComponent ) * 4f );
+
+         if( _cachedBoxWidths.TryGetValue( rectId, out var cachedWidth ) && cachedWidth < minPlausibleWidth )
+         {
+            _cachedBoxWidths.Remove( rectId );
+         }
+
+         if( _cachedBoxWidths.TryGetValue( rectId, out cachedWidth ) )
          {
             boxWidth = cachedWidth;
             XuaLogger.AutoTranslator.Debug( "StoryTextPreTranslateHook: using cached box width " + boxWidth.ToString( "0.0" ) + " for '" + rectTransform.name + "' instead of re-reading a value this hook may have already influenced." );
@@ -831,14 +849,25 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             TryForceLayoutSettle();
 
             boxWidth = rectTransform.rect.width;
-            if( boxWidth <= 0f )
+            if( boxWidth < minPlausibleWidth )
             {
-               XuaLogger.AutoTranslator.Warn( "StoryTextPreTranslateHook: story text box RectTransform.rect.width read as " + boxWidth + " (not yet laid out?); displaying unwrapped: " + flatText );
-               return flatText;
+               if( _lastGoodStoryBoxWidth >= minPlausibleWidth )
+               {
+                  XuaLogger.AutoTranslator.Debug( "StoryTextPreTranslateHook: story box width read as " + boxWidth.ToString( "0.0" ) + " (layout not settled); using the last good story box width " + _lastGoodStoryBoxWidth.ToString( "0.0" ) + " for '" + rectTransform.name + "' (not cached)." );
+                  boxWidth = _lastGoodStoryBoxWidth;
+               }
+               else
+               {
+                  XuaLogger.AutoTranslator.Warn( "StoryTextPreTranslateHook: story text box RectTransform.rect.width read as " + boxWidth + " (not yet laid out?); displaying unwrapped (not cached): " + flatText );
+                  return flatText;
+               }
             }
-
-            _cachedBoxWidths[ rectId ] = boxWidth;
-            XuaLogger.AutoTranslator.Debug( "StoryTextPreTranslateHook: caching first-observed box width " + boxWidth.ToString( "0.0" ) + " for '" + rectTransform.name + "'." );
+            else
+            {
+               _cachedBoxWidths[ rectId ] = boxWidth;
+               _lastGoodStoryBoxWidth = boxWidth;
+               XuaLogger.AutoTranslator.Debug( "StoryTextPreTranslateHook: caching first-observed box width " + boxWidth.ToString( "0.0" ) + " for '" + rectTransform.name + "'." );
+            }
          }
 
          object typedComponent = textComponent;
@@ -955,6 +984,26 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                int step = Math.Max( 1, (int)Math.Round( originalSize * 0.04 ) );
                curSize = Math.Max( minSize, curSize - step );
                StoryFontSizeSet( uiText, rectId, curSize );
+            }
+
+            int wordCount = 0;
+            foreach( var token in words )
+            {
+               if( !string.IsNullOrEmpty( token ) && token != "\n" && token != " " && HasLetterOrDigit( token ) )
+               {
+                  wordCount++;
+               }
+            }
+            if( wordCount >= 5 && lineCount >= 4 && lineCount * 10 >= wordCount * 6 )
+            {
+               if( curSize != originalSize )
+               {
+                  StoryFontSizeSet( uiText, rectId, originalSize );
+               }
+               _cachedBoxWidths.Remove( rectId );
+               XuaLogger.AutoTranslator.Warn( "StoryTextPreTranslateHook: wrapping against box width " + boxWidth.ToString( "0.0" ) + " gives " + lineCount
+                  + " line(s) for " + wordCount + " word(s) - the width is not trustworthy; displaying unwrapped: " + flatText );
+               return flatText;
             }
 
             if( curSize != originalSize )

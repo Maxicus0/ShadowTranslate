@@ -987,13 +987,27 @@ namespace XUnity.AutoTranslator.Plugin.Core
          }
       }
 
+      internal void ReapplyTranslatedText( object ui, string text )
+      {
+         if( ui == null || string.IsNullOrEmpty( text ) )
+         {
+            return;
+         }
+
+         SetText( ui, text, true, null, ui.GetTextTranslationInfo() );
+      }
+
       internal void SetTranslatedText( object ui, string translatedText, string originalText, TextTranslationInfo info )
       {
+         translatedText = Hooks.SdwTextCustomHook.ReflowLikeOriginal( ui, translatedText, originalText ?? info?.OriginalText );
+
          info?.SetTranslatedText( translatedText );
 
          if( _isInTranslatedMode && !CallOrigin.ExpectsTextToBeReturned )
          {
             SetText( ui, translatedText, true, originalText, info );
+
+            Hooks.SdwTextCustomHook.ScheduleOverflowWrap( ui, translatedText );
          }
       }
 
