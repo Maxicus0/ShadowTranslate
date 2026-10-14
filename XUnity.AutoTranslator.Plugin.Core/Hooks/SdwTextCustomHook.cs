@@ -33,8 +33,15 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return true;
          }
 
-         var marker = __instance.GetOrCreateExtensionData<SdwTextInstanceMarker>();
-         marker.InstanceId = GetUnityInstanceId( __instance );
+         try
+         {
+            var marker = __instance.GetOrCreateExtensionData<SdwTextInstanceMarker>();
+            marker.InstanceId = GetUnityInstanceId( __instance );
+         }
+         catch( System.Exception e )
+         {
+            LogHookError( "MarkAsSdwTextInstance", e );
+         }
          return true;
       }
 
@@ -544,11 +551,23 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          XuaLogger.AutoTranslator.Info( "SdwTextCustomHook: patched " + target.DeclaringType?.FullName + "." + target + " (FONT-REASSERT fix)." );
       }
 
+      private static void LogHookError( string name, System.Exception e )
+      {
+         XuaLogger.AutoTranslator.Warn( e, "SdwTextCustomHook: " + name + " failed." );
+      }
+
       private static void SetFontSetting_Postfix( object __instance )
       {
-         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "SetFontSetting" ) )
+         try
          {
-            SetFontSettingCore( __instance );
+            using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "SetFontSetting" ) )
+            {
+               SetFontSettingCore( __instance );
+            }
+         }
+         catch( System.Exception e )
+         {
+            LogHookError( "SetFontSetting", e );
          }
       }
 
@@ -584,21 +603,42 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static void SetText_Postfix( object __instance )
       {
-         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
-         RememberGameEntryPoint( __instance, "SetText" );
+         try
+         {
+            MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
+            RememberGameEntryPoint( __instance, "SetText" );
+         }
+         catch( System.Exception e )
+         {
+            LogHookError( "SetText", e );
+         }
          Dispatch( __instance, forceStabilizationReset: false );
       }
 
       private static void UpdateText_Postfix( object __instance )
       {
-         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
-         RememberGameEntryPoint( __instance, "UpdateText" );
+         try
+         {
+            MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
+            RememberGameEntryPoint( __instance, "UpdateText" );
+         }
+         catch( System.Exception e )
+         {
+            LogHookError( "UpdateText", e );
+         }
          Dispatch( __instance, forceStabilizationReset: false );
       }
 
       private static void TextPropertySetter_Postfix( object __instance, string value )
       {
-         MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
+         try
+         {
+            MenuCharacterMessageBoxFontFixHook.EnforceMessageBoxAlignment( __instance );
+         }
+         catch( System.Exception e )
+         {
+            LogHookError( "TextPropertySetter", e );
+         }
          Dispatch( __instance, forceStabilizationReset: false );
       }
 
@@ -651,9 +691,16 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       private static void Dispatch( object instance, bool forceStabilizationReset )
       {
-         using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.SdwDispatch" ) )
+         try
          {
-            DispatchCore( instance, forceStabilizationReset );
+            using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.SdwDispatch" ) )
+            {
+               DispatchCore( instance, forceStabilizationReset );
+            }
+         }
+         catch( System.Exception e )
+         {
+            LogHookError( "Dispatch", e );
          }
       }
 
@@ -1168,6 +1215,10 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          try
          {
             _updateTextMethod.Invoke( component, new object[] { text } );
+         }
+         catch( System.Exception e )
+         {
+            XuaLogger.AutoTranslator.Debug( "InvokeUpdateText failed: " + e.Message );
          }
          finally
          {

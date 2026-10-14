@@ -4,7 +4,7 @@
 		<TargetFramework>net6.0</TargetFramework>
 		<LangVersion>latest</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>0.1.0</Version>
+		<Version>0.2.0</Version>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 		<GenerateDependencyFile>false</GenerateDependencyFile>
 		<GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -104,6 +104,33 @@
 		</EmbeddedResource>
 	</ItemGroup>
 
+	<PropertyGroup>
+		<UpdaterDir>$(MSBuildProjectDirectory)\Updater\ShadowTranslate.Updater</UpdaterDir>
+		<UpdaterOutDir>$(MSBuildProjectDirectory)\obj\updater</UpdaterOutDir>
+		<UpdaterExe>$(UpdaterOutDir)\ShadowTranslate.Updater.exe</UpdaterExe>
+		<DotnetHost Condition="'$(DOTNET_HOST_PATH)' != ''">$(DOTNET_HOST_PATH)</DotnetHost>
+		<DotnetHost Condition="'$(DotnetHost)' == ''">dotnet</DotnetHost>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Compile Remove="Updater\**" />
+		<EmbeddedResource Remove="Updater\**" />
+		<None Remove="Updater\**" />
+		<UpdaterSources Include="Updater\ShadowTranslate.Updater\**\*.cs;Updater\ShadowTranslate.Updater\*.csproj" Exclude="Updater\ShadowTranslate.Updater\obj\**;Updater\ShadowTranslate.Updater\bin\**" />
+	</ItemGroup>
+
+	<Target Name="BuildUpdater" Inputs="@(UpdaterSources)" Outputs="$(UpdaterExe)">
+		<Exec Command="&quot;$(DotnetHost)&quot; build &quot;$(UpdaterDir)\ShadowTranslate.Updater.csproj&quot; -c Release -o &quot;$(UpdaterOutDir)&quot; --nologo -v:q" />
+	</Target>
+
+	<Target Name="EmbedUpdater" BeforeTargets="AssignTargetPaths" DependsOnTargets="BuildUpdater">
+		<ItemGroup>
+			<EmbeddedResource Include="$(UpdaterExe)">
+				<LogicalName>ShadowTranslate.Updater.exe</LogicalName>
+			</EmbeddedResource>
+		</ItemGroup>
+	</Target>
+
 	<Target Name="AddGeneratedFile" BeforeTargets="BeforeCompile;CoreCompile" Inputs="$(MSBuildAllProjects)" Outputs="$(IntermediateOutputPath)GeneratedInfo.cs">
 		<PropertyGroup>
 			<GeneratedText><![CDATA[namespace $(RootNamespace) { internal static class GeneratedInfo { public const string PROJECT_VERSION = "$(Version)"%3B } }]]></GeneratedText>
@@ -144,9 +171,10 @@
 
 	<Target Name="CleanOutputDir" AfterTargets="ILRepackNET60">
 		<ItemGroup>
-			<ExtraOutputFiles Include="$(TargetDir)*" Exclude="$(TargetDir)$(AssemblyName).dll" />
+			<ExtraOutputFiles Include="$(TargetDir)*" Exclude="$(TargetDir)$(AssemblyName).dll;$(TargetDir)ShadowTranslate.Updater.exe" />
 		</ItemGroup>
 		<Delete Files="@(ExtraOutputFiles)" />
+		<Copy SourceFiles="$(UpdaterExe)" DestinationFolder="$(TargetDir)" />
 	</Target>
 
 </Project>

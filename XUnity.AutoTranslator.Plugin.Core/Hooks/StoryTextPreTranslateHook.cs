@@ -1033,6 +1033,18 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
       internal static void TryApplyWrapSafetyNet( object textComponent )
       {
+         try
+         {
+            TryApplyWrapSafetyNetCore( textComponent );
+         }
+         catch( Exception e )
+         {
+            XuaLogger.AutoTranslator.Debug( "TryApplyWrapSafetyNet failed: " + e.Message );
+         }
+      }
+
+      private static void TryApplyWrapSafetyNetCore( object textComponent )
+      {
          if( !Settings.TipsScreenWrapSafetyNet )
          {
             return;

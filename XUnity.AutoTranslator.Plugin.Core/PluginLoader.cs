@@ -5,6 +5,8 @@ using System.Linq;
 using System.Text;
 using UnityEngine;
 using XUnity.AutoTranslator.Plugin.Core.Configuration;
+using XUnity.AutoTranslator.Plugin.Core.Constants;
+using XUnity.AutoTranslator.Plugin.Core.Updating;
 using XUnity.Common.Logging;
 
 namespace XUnity.AutoTranslator.Plugin.Core
@@ -22,6 +24,8 @@ namespace XUnity.AutoTranslator.Plugin.Core
          {
             _loaded = true;
             PluginEnvironment.Current = config;
+
+            ShadowUpdateGate.Run( PluginData.Version, msg => XuaLogger.AutoTranslator.Info( msg ) );
 
             Plugin = new AutoTranslationPlugin();
             var obj = new GameObject( "___XUnityAutoTranslator" );

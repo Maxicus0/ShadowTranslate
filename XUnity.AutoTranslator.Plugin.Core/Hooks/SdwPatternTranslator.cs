@@ -16,7 +16,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       private const int MinLiteralLetters = 3;
       private static readonly TimeSpan RegexTimeout = TimeSpan.FromMilliseconds( 50 );
 
-      private static readonly Regex PlaceholderRegex = new Regex( @"\{(\d+)(?:[,:][^{}]*)?\}", RegexOptions.CultureInvariant );
+      private static readonly Regex PlaceholderRegex = new Regex( @"\{([0-9]{1,4})(?:[,:][^{}]*)?\}", RegexOptions.CultureInvariant );
 
       private sealed class TargetPart
       {
@@ -321,6 +321,12 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          public string Source;
          public string Sep;
          public bool Translated;
+      }
+
+      private static int ComparePatterns( Pattern a, Pattern b )
+      {
+         int c = b.LiteralLength.CompareTo( a.LiteralLength );
+         return c != 0 ? c : string.CompareOrdinal( a.Source, b.Source );
       }
 
       internal static bool TryCompose( string text, out string translated )
@@ -954,7 +960,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
 
          var keyIdx = new HashSet<int>();
-         foreach( Match m in PlaceholderRegex.Matches( key ) ) keyIdx.Add( int.Parse( m.Groups[ 1 ].Value ) );
+         foreach( Match m in PlaceholderRegex.Matches( key ) ) keyIdx.Add( int.Parse( m.Groups[ 1 ].Value, System.Globalization.CultureInfo.InvariantCulture ) );
 
          var valueMatches = PlaceholderRegex.Matches( value );
          if( valueMatches.Count == 0 )
@@ -963,7 +969,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
          foreach( Match m in valueMatches )
          {
-            if( !keyIdx.Contains( int.Parse( m.Groups[ 1 ].Value ) ) )
+            if( !keyIdx.Contains( int.Parse( m.Groups[ 1 ].Value, System.Globalization.CultureInfo.InvariantCulture ) ) )
             {
                return "translation uses {" + m.Groups[ 1 ].Value + "} which the original does not define";
             }
@@ -1063,7 +1069,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             if( patternsAdded )
             {
                var incrementalList = new List<Pattern>( _mergedPatterns.Values );
-               incrementalList.Sort( ( a, b ) => b.LiteralLength.CompareTo( a.LiteralLength ) );
+               incrementalList.Sort( ComparePatterns );
                _patterns = incrementalList.ToArray();
                BuildPatternIndex( _patterns );
             }
@@ -1099,7 +1105,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          _composeCache.Clear();
 
          var list = new List<Pattern>( merged.Values );
-         list.Sort( ( a, b ) => b.LiteralLength.CompareTo( a.LiteralLength ) );
+         list.Sort( ComparePatterns );
          _patterns = list.ToArray();
          BuildPatternIndex( _patterns );
          _cache.Clear();
@@ -1120,7 +1126,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             AppendLiteral( rx, key.Substring( pos, m.Index - pos ), ref anchor, ref literalLength );
             pos = m.Index + m.Length;
 
-            int idx = int.Parse( m.Groups[ 1 ].Value );
+            int idx = int.Parse( m.Groups[ 1 ].Value, System.Globalization.CultureInfo.InvariantCulture );
             if( seen.Add( idx ) )
             {
                rx.Append( "(?<g" ).Append( idx ).Append( ">.+?)" );
@@ -1147,7 +1153,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             {
                parts.Add( new TargetPart { Literal = value.Substring( pos, m.Index - pos ) } );
             }
-            parts.Add( new TargetPart { GroupIndex = int.Parse( m.Groups[ 1 ].Value ) } );
+            parts.Add( new TargetPart { GroupIndex = int.Parse( m.Groups[ 1 ].Value, System.Globalization.CultureInfo.InvariantCulture ) } );
             pos = m.Index + m.Length;
          }
          if( pos < value.Length )

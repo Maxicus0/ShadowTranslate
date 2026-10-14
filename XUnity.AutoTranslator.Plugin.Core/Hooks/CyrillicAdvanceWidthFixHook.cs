@@ -106,9 +106,13 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return;
             }
 
-            XuaLogger.AutoTranslator.Debug(
-               "CyrillicAdvanceWidthFixHook: RequestCharactersInTexture seen with Cyrillic characters on font '"
-               + __instance.name + "' (dynamic=" + __instance.dynamic + "): " + characters );
+            bool diag = XUnity.AutoTranslator.Plugin.Core.Configuration.Settings.EnableSdwDiagnostics;
+            if( diag )
+            {
+               XuaLogger.AutoTranslator.Debug(
+                  "CyrillicAdvanceWidthFixHook: RequestCharactersInTexture seen with Cyrillic characters on font '"
+                  + __instance.name + "' (dynamic=" + __instance.dynamic + "): " + characters );
+            }
 
             _isPriming = true;
             try
@@ -126,37 +130,46 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return;
             }
 
-            var advanceByChar = new Dictionary<int, int>( info.Count );
-            for( int i = 0; i < info.Count; i++ )
+            var entries = new CharacterInfo[ info.Count ];
+            var advanceByChar = new Dictionary<(int index, int size, int style), int>( info.Count );
+            for( int i = 0; i < entries.Length; i++ )
             {
-               advanceByChar[ info[ i ].index ] = info[ i ].advance;
+               var e = info[ i ];
+               entries[ i ] = e;
+               advanceByChar[ ( e.index, e.size, (int)e.style ) ] = e.advance;
             }
 
-            foreach( char c in characters )
+            if( diag )
             {
-               if( !_widthAnalog.TryGetValue( c, out char analog ) )
+               foreach( char c in characters )
                {
-                  continue;
+                  if( !_widthAnalog.TryGetValue( c, out char analog ) )
+                  {
+                     continue;
+                  }
+
+                  int selfCount = 0, analogCount = 0;
+                  foreach( var key in advanceByChar.Keys )
+                  {
+                     if( key.index == c ) selfCount++;
+                     else if( key.index == analog ) analogCount++;
+                  }
+
+                  XuaLogger.AutoTranslator.Debug(
+                     "CyrillicAdvanceWidthFixHook: DIAG char '" + c + "' (U+" + ( (int)c ).ToString( "X4" ) + ") entries=" + selfCount
+                     + "; analog '" + analog + "' (U+" + ( (int)analog ).ToString( "X4" ) + ") entries=" + analogCount
+                     + " (" + info.Count + " total)." );
                }
-
-               bool foundSelf = advanceByChar.TryGetValue( (int)c, out int selfAdvance );
-               bool foundAnalog = advanceByChar.TryGetValue( (int)analog, out int analogAdvanceDiag );
-
-               XuaLogger.AutoTranslator.Debug(
-                  "CyrillicAdvanceWidthFixHook: DIAG char '" + c + "' (U+" + ( (int)c ).ToString( "X4" ) + ") "
-                  + ( foundSelf ? "advance=" + selfAdvance : "NOT in characterInfo (" + info.Count + " entries total)" )
-                  + "; analog '" + analog + "' (U+" + ( (int)analog ).ToString( "X4" ) + ") "
-                  + ( foundAnalog ? "advance=" + analogAdvanceDiag : "also not found" ) + "." );
             }
 
             bool changed = false;
-            var mergedArray = new CharacterInfo[ info.Count ];
-            for( int i = 0; i < info.Count; i++ )
+            var mergedArray = entries;
+            for( int i = 0; i < mergedArray.Length; i++ )
             {
-               var entry = info[ i ];
+               var entry = mergedArray[ i ];
                char current = (char)entry.index;
                if( _widthAnalog.TryGetValue( current, out char analog ) &&
-                   advanceByChar.TryGetValue( (int)analog, out int analogAdvance ) &&
+                   advanceByChar.TryGetValue( ( (int)analog, entry.size, (int)entry.style ), out int analogAdvance ) &&
                    entry.advance != analogAdvance )
                {
                   entry.advance = analogAdvance;

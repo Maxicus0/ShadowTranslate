@@ -159,12 +159,21 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                      ForceMiddleCenter( textComponent );
                   }
 
-                  var info = textComponent.GetOrCreateTextTranslationInfo();
-                  bool isTranslated = info != null && info.IsTranslated;
-
-                  if( isTranslated )
+                  TextTranslationInfo info = null;
+                  bool isTranslated = false;
+                  try
                   {
-                     info.ChangeFont( textComponent );
+                     info = textComponent.GetOrCreateTextTranslationInfo();
+                     isTranslated = info != null && info.IsTranslated;
+
+                     if( isTranslated )
+                     {
+                        info.ChangeFont( textComponent );
+                     }
+                  }
+                  catch( Exception e )
+                  {
+                     XuaLogger.AutoTranslator.Debug( "ReassertMessageBoxFonts failed: " + e.Message );
                   }
 
                   if( diag )
