@@ -38,7 +38,6 @@ namespace XUnity.AutoTranslator.Plugin.Core
       internal bool HasLineSpacingOverride => _alteredLineSpacing.HasValue;
       private int? _alteredFontSize;
 
-
       private int _labelFitBaseSize;
       private int _labelFitAppliedSize;
 
@@ -170,7 +169,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
                {
                   if( !UnityObjectReferenceComparer.Default.Equals( replacementFont, previousFont ) )
                   {
-                     if( Settings.EnableSdwDiagnostics )
+                     if( Settings.EnableFontDiagnostics )
                      {
                         XuaLogger.AutoTranslator.Debug(
                            "TextTranslationInfo.ChangeFont: Text-branch swapping to native replacement font '" + replacementFont.name
@@ -259,7 +258,6 @@ namespace XUnity.AutoTranslator.Plugin.Core
                      }
                   }
 
-
                   SdwLineSpacingPolicy.Apply( ui, this );
 
                   LogRussianTextRender( ui, "native-replacement", replacementFont, nativeFont );
@@ -304,7 +302,6 @@ namespace XUnity.AutoTranslator.Plugin.Core
                   {
                      XuaLogger.AutoTranslator.Warn( e, "TextTranslationInfo.ChangeFont: failed to synchronously apply/refresh the native-font Cyrillic spacing correction." );
                   }
-
 
                   LogRussianTextRender( ui, "no-replacement-kept-native", nativeFont, nativeFont );
                }
@@ -518,7 +515,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private static void LogAtlasDiagnostics( object ui, string phase, Font activeFont, Font nativeFont )
       {
-         if( !Settings.EnableSdwDiagnostics ) return;
+         if( !Settings.EnableFontDiagnostics ) return;
 
          try
          {
@@ -580,7 +577,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private static void LogAndProbeMeshEffectSiblings( object ui, string phase )
       {
-         if( !Settings.EnableSdwDiagnostics ) return;
+         if( !Settings.EnableFontDiagnostics ) return;
 
          try
          {
@@ -685,7 +682,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void LogRussianTextRender( object ui, string outcome, string appliedFontName, string nativeFontName, bool? liveHasCyrillicGlyph = null, bool? faceVerified = null, string actualResolvedFace = null, bool? osEnumerable = null, bool? fingerprintMatches = null, float? expectedAdvancePx = null, float? measuredAdvancePx = null )
       {
-         if( !Settings.EnableSdwDiagnostics ) return;
+         if( !Settings.EnableFontDiagnostics ) return;
          try
          {
             var text = TranslatedText;
@@ -736,7 +733,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void LogRussianTextRender( object ui, string outcome, Font appliedFont, Font nativeFont )
       {
-         if( !Settings.EnableSdwDiagnostics ) return;
+         if( !Settings.EnableFontDiagnostics ) return;
          bool? liveHasCyrillicGlyph = null;
          bool? faceVerified = null;
          string actualResolvedFace = null;
@@ -771,7 +768,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void LogRussianTextRender( object ui, string outcome, UnityEngine.Object appliedFontAsset, UnityEngine.Object nativeFontAsset )
       {
-         if( !Settings.EnableSdwDiagnostics ) return;
+         if( !Settings.EnableFontDiagnostics ) return;
          LogRussianTextRender( ui, outcome, appliedFontAsset?.name, nativeFontAsset?.name, liveHasCyrillicGlyph: null, faceVerified: null, actualResolvedFace: null, osEnumerable: null );
       }
 
@@ -882,7 +879,7 @@ namespace XUnity.AutoTranslator.Plugin.Core
 
       private void ScheduleDelayedFontVerification( object ui, Font expectedFont, string tag )
       {
-         if( !Settings.EnableSdwDiagnostics ) return;
+         if( !Settings.EnableFontDiagnostics ) return;
 
          try
          {

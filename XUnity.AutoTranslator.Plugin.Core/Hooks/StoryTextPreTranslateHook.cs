@@ -882,6 +882,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             return flatText;
          }
 
+         string rawBefore = SdwTextCustomHook.ReadRawText( typedComponent );
          try
          {
             var wordsRaw = _dividePatternCharacterListMethod.Invoke( typedComponent, new object[] { flatText } );
@@ -1020,6 +1021,10 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          {
             XuaLogger.AutoTranslator.Warn( e, "StoryTextPreTranslateHook: pixel wrap threw for this line; displaying unwrapped instead: " + flatText );
             return flatText;
+         }
+         finally
+         {
+            SdwTextCustomHook.RestoreRawText( typedComponent, rawBefore );
          }
       }
 

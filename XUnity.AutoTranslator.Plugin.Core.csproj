@@ -4,7 +4,7 @@
 		<TargetFramework>net6.0</TargetFramework>
 		<LangVersion>latest</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-		<Version>0.2.0</Version>
+		<Version>0.3.0</Version>
 		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
 		<GenerateDependencyFile>false</GenerateDependencyFile>
 		<GenerateDocumentationFile>false</GenerateDocumentationFile>
@@ -73,6 +73,9 @@
 		</Reference>
 		<Reference Include="UnityEngine.TextRenderingModule">
 			<HintPath>libs\Proxies\UnityEngine.TextRenderingModule.dll</HintPath>
+		</Reference>
+		<Reference Include="UnityEngine.UIModule">
+			<HintPath>libs\Proxies\UnityEngine.UIModule.dll</HintPath>
 		</Reference>
 		<Reference Include="UnityEngine.UnityWebRequestWWWModule">
 			<HintPath>libs\Proxies\UnityEngine.UnityWebRequestWWWModule.dll</HintPath>

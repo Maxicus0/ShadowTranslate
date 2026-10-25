@@ -582,7 +582,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          var info = __instance.GetOrCreateTextTranslationInfo();
 
-         if( Settings.EnableSdwDiagnostics )
+         if( Settings.EnableFontDiagnostics )
          {
             XuaLogger.AutoTranslator.Debug(
                "SdwTextCustomHook.SetFontSetting_Postfix: fired for '" + __instance.GetUnityType()?.FullName
@@ -766,9 +766,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          try
          {
-            bool ok = ExtendCharacterField( sdwTextType, "LatinCharacters", BuildCyrillicLetters() );
-            ok &= ExtendCharacterField( sdwTextType, "NonLineStartingCharacters", new[] { '»', '—', '…', ')' } );
-            ok &= ExtendCharacterField( sdwTextType, "NonLineEndingCharacters", new[] { '«', '(' } );
+            bool ok = ExtendCharacterField( sdwTextType, "LatinCharacters", BuildCyrillicLetters(), IsLatinTable );
+            ok &= ExtendCharacterField( sdwTextType, "NonLineStartingCharacters", new[] { '»', '—', '…', ')' }, IsNonLineStartingTable );
+            ok &= ExtendCharacterField( sdwTextType, "NonLineEndingCharacters", new[] { '«', '(' }, IsNonLineEndingTable );
 
             if( ok )
             {
@@ -796,7 +796,25 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
          chars.Add( '\u0401' );
          chars.Add( '\u0451' );
+
+         chars.Add( '-' );
+         chars.Add( '\u2011' );
          return chars.ToArray();
+      }
+
+      private static bool IsLatinTable( char[] t )
+      {
+         return System.Array.IndexOf( t, 'a' ) >= 0 && System.Array.IndexOf( t, 'Z' ) >= 0 && System.Array.IndexOf( t, '5' ) >= 0;
+      }
+
+      private static bool IsNonLineStartingTable( char[] t )
+      {
+         return System.Array.IndexOf( t, '\u3001' ) >= 0 && System.Array.IndexOf( t, ',' ) >= 0;
+      }
+
+      private static bool IsNonLineEndingTable( char[] t )
+      {
+         return System.Array.IndexOf( t, '\uFF08' ) >= 0 && System.Array.IndexOf( t, '(' ) >= 0;
       }
 
       private static readonly System.Text.RegularExpressions.Regex SizeOpenTagRegex =
@@ -1060,7 +1078,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                RememberSoftBreaks( ui, best, targetLines );
             }
 
-            if( best != null && Settings.EnableSdwDiagnostics )
+            if( best != null && Settings.EnableSdwDiagnostics && DiagAllowed( ui, "reflow" ) )
             {
                XuaLogger.AutoTranslator.Debug( "[REFLOW] path='" + ui.GetPath() + "' originalLines=" + originalLines.Length
                   + " -> \"" + best.Replace( "\n", "\\n" ) + "\"" );
@@ -1291,15 +1309,92 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
-      private const float OverflowWrapRatioOwnRect = 1.15f;
+      private const float OverflowWrapRatioOwnRect = 1.03f;
+      private const float OriginalWidthTolerance = 1.1f;
+      private const double OriginalEmPerWidthUnit = 0.5;
+      private const int LayoutWaitFrames = 180;
       private const float OverflowWrapRatioWrapMode = 1.01f;
       private const float OverflowWrapRatioContainer = 1.03f;
       private const float OverflowWrapMinRoom = 100f;
+
+      private const float FitMinRoom = 40f;
       private const int OverflowWrapMinChars = 25;
 
-      private static readonly string[] NoOverflowWrapPathParts = new string[ 0 ];
+      private const int UnbreakableMinChars = 5;
+
+      private static readonly string[] NoOverflowWrapPathParts = new[] { "/AlertArea/Text_Alert" };
+
+      private const float ButtonRoomFactor = 0.92f;
+      private const int ButtonWrapMinChars = 12;
+      private const double RelaxedMaxLines = 2.0;
+
+      private static readonly System.Collections.Generic.Dictionary<string, float> _diagLastLogged = new System.Collections.Generic.Dictionary<string, float>();
+
+      private static bool DiagAllowed( object ui, string kind )
+      {
+         try
+         {
+            var component = ui as UnityEngine.Component;
+            if( component == null )
+            {
+               return true;
+            }
+
+            string key = kind + ":" + component.GetInstanceID();
+            float now = UnityEngine.Time.realtimeSinceStartup;
+            if( _diagLastLogged.TryGetValue( key, out var last ) && now - last < 1f )
+            {
+               return false;
+            }
+
+            if( _diagLastLogged.Count >= 2048 )
+            {
+               _diagLastLogged.Clear();
+            }
+            _diagLastLogged[ key ] = now;
+            return true;
+         }
+         catch( System.Exception )
+         {
+            return true;
+         }
+      }
+
+      private static bool IsButtonLabelPath( string path )
+      {
+         if( string.IsNullOrEmpty( path ) )
+         {
+            return false;
+         }
+
+         int last = path.LastIndexOf( '/' );
+         if( last <= 0 )
+         {
+            return false;
+         }
+
+         int start = path.LastIndexOf( '/', last - 1 ) + 1;
+         var parent = path.Substring( start, last - start );
+         return parent.IndexOf( "Button", StringComparison.OrdinalIgnoreCase ) >= 0
+            && parent.IndexOf( "Object", StringComparison.OrdinalIgnoreCase ) < 0
+            && parent.IndexOf( "Set", StringComparison.OrdinalIgnoreCase ) < 0
+            && parent.IndexOf( "Group", StringComparison.OrdinalIgnoreCase ) < 0;
+      }
 
       private static readonly string[][] ShrinkOnlyPathParts = new string[][] { new[] { "Download_SystemTips", "/Text_Title" } };
+
+      private static string _singleLineSource;
+      private static string[] _singleLineParts = new string[ 0 ];
+
+      private static bool IsMinPowerPath( string path )
+      {
+         return path != null && path.IndexOf( "/DetailTable01/Text_Template", StringComparison.OrdinalIgnoreCase ) >= 0;
+      }
+
+      private static bool IsFitterRootChild( string path )
+      {
+         return path != null && path.IndexOf( "/ContentSizeFitterRoot/", StringComparison.OrdinalIgnoreCase ) >= 0;
+      }
 
       private static bool IsShrinkOnlyPath( string path )
       {
@@ -1324,17 +1419,226 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return true;
             }
          }
+
+         var configured = Settings.SingleLinePathParts ?? string.Empty;
+         if( !ReferenceEquals( configured, _singleLineSource ) )
+         {
+            _singleLineSource = configured;
+            _singleLineParts = configured.Split( new[] { ';' }, StringSplitOptions.RemoveEmptyEntries );
+         }
+
+         foreach( var part in _singleLineParts )
+         {
+            var trimmed = part.Trim();
+            if( trimmed.Length > 0 && path.IndexOf( trimmed, StringComparison.OrdinalIgnoreCase ) >= 0 )
+            {
+               return true;
+            }
+         }
          return false;
+      }
+
+      private static readonly System.Collections.Generic.HashSet<string> _loggedCyr = new System.Collections.Generic.HashSet<string>();
+      private static readonly System.Text.RegularExpressions.Regex _cyrPathNorm = new System.Text.RegularExpressions.Regex( @"\(Clone\)| \(\d+\)|\d+", System.Text.RegularExpressions.RegexOptions.CultureInvariant );
+
+      internal static void LogCyrillic( object ui, string translated, string original )
+      {
+         if( !Settings.LogCyrillicTranslations || string.IsNullOrEmpty( translated ) )
+         {
+            return;
+         }
+
+         try
+         {
+            bool cyr = false;
+            foreach( var ch in translated )
+            {
+               if( ch >= '\u0400' && ch <= '\u04FF' ) { cyr = true; break; }
+            }
+            if( !cyr || _loggedCyr.Count >= 6000 )
+            {
+               return;
+            }
+
+            string path = ui.GetPath() ?? "?";
+            string key = _cyrPathNorm.Replace( path, "#" ) + "|" + System.Text.RegularExpressions.Regex.Replace( translated, @"\d+", "#" );
+            if( !_loggedCyr.Add( key ) )
+            {
+               return;
+            }
+
+            XuaLogger.AutoTranslator.Debug( "[CYR] '" + translated.Replace( "\r", string.Empty ).Replace( "\n", "\\n" ) + "'  <-  '"
+               + ( original ?? string.Empty ).Replace( "\r", string.Empty ).Replace( "\n", "\\n" ) + "'  at '" + path + "'" );
+         }
+         catch
+         {
+         }
+      }
+
+      private static string _fixedScaleSource;
+      private static System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, float>> _fixedScaleRules = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, float>>();
+
+      private static float GetFixedScale( string path )
+      {
+         if( path == null )
+         {
+            return 0f;
+         }
+
+         var configured = Settings.LabelFixedScaleRules ?? string.Empty;
+         if( !ReferenceEquals( configured, _fixedScaleSource ) )
+         {
+            _fixedScaleSource = configured;
+            var rules = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, float>>();
+            foreach( var entry in configured.Split( new[] { ';' }, StringSplitOptions.RemoveEmptyEntries ) )
+            {
+               int eq = entry.LastIndexOf( '=' );
+               if( eq <= 0 )
+               {
+                  continue;
+               }
+               var key = entry.Substring( 0, eq ).Trim();
+               if( key.Length > 0 && float.TryParse( entry.Substring( eq + 1 ).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value ) && value > 0f )
+               {
+                  rules.Add( new System.Collections.Generic.KeyValuePair<string, float>( key, value ) );
+               }
+            }
+            _fixedScaleRules = rules;
+         }
+
+         foreach( var rule in _fixedScaleRules )
+         {
+            if( path.IndexOf( rule.Key, StringComparison.OrdinalIgnoreCase ) >= 0 )
+            {
+               return rule.Value;
+            }
+         }
+         return 0f;
+      }
+
+      private static string _widthRulesSource;
+      private static System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, float>> _widthRules = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, float>>();
+
+      private static float GetLabelWidthRule( string path )
+      {
+         if( path == null )
+         {
+            return 0f;
+         }
+
+         var configured = Settings.LabelWidthRules ?? string.Empty;
+         if( !ReferenceEquals( configured, _widthRulesSource ) )
+         {
+            _widthRulesSource = configured;
+            var rules = new System.Collections.Generic.List<System.Collections.Generic.KeyValuePair<string, float>>();
+            foreach( var entry in configured.Split( new[] { ';' }, StringSplitOptions.RemoveEmptyEntries ) )
+            {
+               int eq = entry.LastIndexOf( '=' );
+               if( eq <= 0 )
+               {
+                  continue;
+               }
+
+               var key = entry.Substring( 0, eq ).Trim();
+               if( key.Length > 0 && float.TryParse( entry.Substring( eq + 1 ).Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var value ) && value > 0f )
+               {
+                  rules.Add( new System.Collections.Generic.KeyValuePair<string, float>( key, value ) );
+               }
+            }
+            _widthRules = rules;
+         }
+
+         foreach( var rule in _widthRules )
+         {
+            if( path.IndexOf( rule.Key, StringComparison.OrdinalIgnoreCase ) >= 0 )
+            {
+               return rule.Value;
+            }
+         }
+         return 0f;
       }
 
       private static System.Type _sdwTextClrType;
       private static System.Reflection.MethodInfo _getTextWidthMethodInfo;
       private static System.Reflection.MethodInfo _getSpaceWidthMethodInfo;
 
+      private sealed class FitMemo
+      {
+         public string Text;
+         public string Wrapped;
+         public float Width;
+         public int Shrunk;
+      }
+
+      private static readonly System.Collections.Generic.Dictionary<int, FitMemo> _fitMemos = new System.Collections.Generic.Dictionary<int, FitMemo>();
+
+      private static void RememberFit( int id, string text, float width, string wrapped = null )
+      {
+         if( _fitMemos.Count >= 4096 )
+         {
+            _fitMemos.Clear();
+         }
+         int shrunkSize = _shrunkFonts.TryGetValue( id, out var shrunkRecord ) ? shrunkRecord.Shrunk : 0;
+         _fitMemos[ id ] = new FitMemo { Text = text, Wrapped = wrapped, Width = width, Shrunk = shrunkSize };
+      }
+
+      private static bool IsFitUnchanged( UnityEngine.Component component, int id, string text )
+      {
+         return _fitMemos.Count > 0
+            && _fitMemos.TryGetValue( id, out var memo )
+            && ( memo.Text == text || memo.Wrapped == text )
+            && !_pendingOverflowWrap.ContainsKey( id )
+            && Math.Abs( memo.Width - GetRectWidth( component ) ) < 0.5f
+            && ( memo.Shrunk <= 0 || ReadFontSize( component ) == memo.Shrunk );
+      }
+
       private sealed class PendingOverflow
       {
          public string Text;
          public int SoftLines;
+         public bool Immediate;
+      }
+
+      private static readonly System.Collections.Generic.Dictionary<int, int> _seenFrames = new System.Collections.Generic.Dictionary<int, int>();
+
+      private static bool CanFitImmediately( UnityEngine.Component component, int id )
+      {
+         int frame = UnityEngine.Time.frameCount;
+         bool seenLongAgo = _seenFrames.TryGetValue( id, out var first ) && frame - first >= 3;
+         if( !_seenFrames.ContainsKey( id ) )
+         {
+            if( _seenFrames.Count >= 4096 )
+            {
+               _seenFrames.Clear();
+            }
+            _seenFrames[ id ] = frame;
+         }
+
+         if( GetRectWidth( component ) < 1f )
+         {
+            return false;
+         }
+
+         var settle = Settings.SettleFramePathParts;
+         if( !string.IsNullOrEmpty( settle ) )
+         {
+            string cpath = component.GetPath();
+            foreach( var part in settle.Split( new[] { ';' }, StringSplitOptions.RemoveEmptyEntries ) )
+            {
+               var t = part.Trim();
+               if( t.Length > 0 && cpath != null && cpath.IndexOf( t, StringComparison.OrdinalIgnoreCase ) >= 0 )
+               {
+                  return false;
+               }
+            }
+         }
+
+         if( seenLongAgo )
+         {
+            return true;
+         }
+
+         return HasContentSizeFitter( component ) && GetContainerWidth( component ) >= OverflowWrapMinRoom;
       }
 
       private static readonly System.Collections.Generic.Dictionary<int, PendingOverflow> _pendingOverflowWrap = new System.Collections.Generic.Dictionary<int, PendingOverflow>();
@@ -1375,6 +1679,61 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return false;
       }
 
+      private static System.Type _fitterClrType;
+      private static bool _fitterTypeResolved;
+
+      private static int GetHorizontalFitMode( UnityEngine.Component c )
+      {
+         try
+         {
+            foreach( var comp in c.GetComponents<UnityEngine.Component>() )
+            {
+               if( comp == null )
+               {
+                  continue;
+               }
+
+               var nativeName = comp.GetUnityType()?.FullName;
+               bool isFitter = ( nativeName != null && nativeName.EndsWith( "ContentSizeFitter", StringComparison.Ordinal ) )
+                  || comp.GetType().Name == "ContentSizeFitter";
+               if( !isFitter )
+               {
+                  continue;
+               }
+
+               object typed = comp;
+               var property = typed.GetType().GetProperty( "horizontalFit" );
+               if( property == null )
+               {
+                  if( !_fitterTypeResolved )
+                  {
+                     _fitterTypeResolved = true;
+                     ResolveTypesByName( "ContentSizeFitter" ).TryGetValue( "ContentSizeFitter", out _fitterClrType );
+                  }
+
+                  if( _fitterClrType == null )
+                  {
+                     return -1;
+                  }
+
+                  typed = Il2CppUtilities.CreateProxyComponentWithDerivedType( ( (Il2CppInterop.Runtime.InteropTypes.Il2CppObjectBase)comp ).Pointer, _fitterClrType );
+                  property = _fitterClrType.GetProperty( "horizontalFit" );
+               }
+
+               if( property == null || typed == null )
+               {
+                  return -1;
+               }
+
+               return Convert.ToInt32( property.GetValue( typed, null ) );
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+         return -1;
+      }
+
       private static float GetContainerWidth( UnityEngine.Component c )
       {
          try
@@ -1398,6 +1757,20 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          {
          }
          return 0f;
+      }
+
+      private static float GetParentRectWidth( UnityEngine.Component c )
+      {
+         try
+         {
+            var parent = c.transform.parent;
+            var rt = parent == null ? null : parent.GetComponent<UnityEngine.RectTransform>();
+            return rt == null ? 0f : rt.rect.width;
+         }
+         catch( System.Exception )
+         {
+            return 0f;
+         }
       }
 
       private static float GetRectHeight( UnityEngine.Component component )
@@ -1440,13 +1813,29 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       {
          try
          {
+            if( !string.IsNullOrEmpty( translated ) && ui is UnityEngine.Component knownComponent
+               && IsFitUnchanged( knownComponent, knownComponent.GetInstanceID(), translated ) )
+            {
+               return;
+            }
+
+            if( ui is UnityEngine.Component staleComponent )
+            {
+               _fitMemos.Remove( staleComponent.GetInstanceID() );
+            }
+
             if( _shrunkFonts.Count > 0 && ui is UnityEngine.Component shrunkComponent )
             {
                RestoreShrunkFont( ui, shrunkComponent.GetInstanceID() );
             }
 
-            if( ui == null || string.IsNullOrEmpty( translated ) || translated.Length < OverflowWrapMinChars
-               || ( translated.IndexOf( ' ' ) < 0 && translated.IndexOf( '\n' ) < 0 ) )
+            if( ui == null || string.IsNullOrEmpty( translated ) )
+            {
+               return;
+            }
+
+            bool breakableText = translated.IndexOf( ' ' ) >= 0 || translated.IndexOf( '\n' ) >= 0;
+            if( translated.Length < ( breakableText ? ButtonWrapMinChars : UnbreakableMinChars ) )
             {
                return;
             }
@@ -1466,11 +1855,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                return;
             }
 
-            if( IsSelfWrapping( ui ) && !HasContentSizeFitter( raw ) )
+            if( StoryTextPreTranslateHook.IsPreTranslatedInstance( ui ) )
             {
                if( Settings.EnableSdwDiagnostics )
                {
-                  XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] skip path='" + raw.GetPath() + "': the game wraps this label itself" );
+                  XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] skip path='" + raw.GetPath() + "': story text is fitted by StoryTextPreTranslateHook" );
                }
                return;
             }
@@ -1488,6 +1877,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                }
             }
 
+            if( translated.Length < OverflowWrapMinChars && !IsButtonLabelPath( raw.GetPath() ) && GetLabelWidthRule( raw.GetPath() ) <= 0f && !IsShrinkOnlyPath( raw.GetPath() ) && !MayOverflowRect( raw, translated ) )
+            {
+               return;
+            }
+
             int id = raw.GetInstanceID();
             if( IsVolatileLabel( id ) )
             {
@@ -1500,14 +1894,39 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                softLines = soft.Lines;
             }
 
-            if( Settings.EnableSdwDiagnostics )
+            if( Settings.EnableSdwDiagnostics && DiagAllowed( ui, "scheduled" ) )
             {
                XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] scheduled path='" + raw.GetPath() + "' selfWrapping=" + IsSelfWrapping( ui )
                   + " len=" + translated.Length + " softLines=" + softLines );
             }
 
+            float knownWidth = GetRectWidth( raw );
+            if( knownWidth >= 1f && _plannedWraps.Count > 0
+               && _plannedWraps.TryGetValue( PlanKey( raw, translated, knownWidth, ui ), out var planned ) )
+            {
+               UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+               if( _overflowSetByUs.Count >= 4096 )
+               {
+                  _overflowSetByUs.Clear();
+               }
+               _overflowSetByUs.Add( id );
+               RememberWrap( id, translated, planned.Text );
+               RememberFit( id, translated, knownWidth, planned.Text );
+               AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, planned.Text );
+               return;
+            }
+
             bool alreadyRunning = _pendingOverflowWrap.ContainsKey( id );
-            _pendingOverflowWrap[ id ] = new PendingOverflow { Text = translated, SoftLines = softLines };
+            bool immediate = CanFitImmediately( raw, id );
+            _pendingOverflowWrap[ id ] = new PendingOverflow { Text = translated, SoftLines = softLines, Immediate = immediate };
+            string hidePath = raw.GetPath();
+            bool hideWhileFitting = softLines > 0 || IsSelfWrapping( ui )
+               || IsButtonLabelPath( hidePath ) || GetLabelWidthRule( hidePath ) > 0f
+               || ( IsShrinkOnlyPath( hidePath ) && !IsFitterRootChild( hidePath ) ) || GetFixedScale( hidePath ) > 0f;
+            if( hideWhileFitting && !immediate )
+            {
+               SetFitHidden( ui, id, true );
+            }
             if( !alreadyRunning )
             {
                XUnity.AutoTranslator.Plugin.Core.Utilities.CoroutineHelper.Start( OverflowWrapWhenLaidOut( ui, id ) );
@@ -1519,13 +1938,152 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          }
       }
 
+      private static readonly System.Collections.Generic.HashSet<int> _hiddenForFit = new System.Collections.Generic.HashSet<int>();
+
+      private static UnityEngine.CanvasRenderer FindCanvasRenderer( UnityEngine.Component component )
+      {
+         try
+         {
+            var direct = component.GetComponent<UnityEngine.CanvasRenderer>();
+            if( direct != null )
+            {
+               return direct;
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+
+         try
+         {
+            var property = component.GetType().CachedProperty( "canvasRenderer" );
+            var viaProperty = property?.Get( component ) as UnityEngine.CanvasRenderer;
+            if( viaProperty != null )
+            {
+               return viaProperty;
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+
+         return null;
+      }
+
+      internal static string TryGetPlannedText( object ui, string text )
+      {
+         try
+         {
+            if( _plannedWraps.Count == 0 || string.IsNullOrEmpty( text ) )
+            {
+               return null;
+            }
+
+            var raw = ui as UnityEngine.Component;
+            if( raw == null || !IsSdwTextComponent( ui ) )
+            {
+               return null;
+            }
+
+            float width = GetRectWidth( raw );
+            if( width < 1f )
+            {
+               return null;
+            }
+
+            int id = raw.GetInstanceID();
+            if( _shrunkFonts.Count > 0 )
+            {
+               RestoreShrunkFont( ui, id );
+            }
+
+            if( !_plannedWraps.TryGetValue( PlanKey( raw, text, width, ui ), out var planned ) )
+            {
+               return null;
+            }
+
+            UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+            if( _overflowSetByUs.Count >= 4096 )
+            {
+               _overflowSetByUs.Clear();
+            }
+            _overflowSetByUs.Add( id );
+            RememberWrap( id, text, planned.Text );
+            RememberFit( id, text, width, planned.Text );
+            return planned.Text;
+         }
+         catch( System.Exception )
+         {
+            return null;
+         }
+      }
+
+      private static void SetFitHidden( object ui, int id, bool hide )
+      {
+         try
+         {
+            if( !hide && !_hiddenForFit.Contains( id ) )
+            {
+               return;
+            }
+
+            var component = ui as UnityEngine.Component;
+            var renderer = component == null ? null : FindCanvasRenderer( component );
+            if( hide )
+            {
+               if( renderer != null )
+               {
+                  renderer.SetAlpha( 0f );
+                  _hiddenForFit.Add( id );
+               }
+            }
+            else
+            {
+               _hiddenForFit.Remove( id );
+               if( renderer != null )
+               {
+                  renderer.SetAlpha( 1f );
+               }
+            }
+         }
+         catch( System.Exception )
+         {
+            _hiddenForFit.Remove( id );
+         }
+      }
+
+      private sealed class PlannedWrap
+      {
+         public string Text;
+      }
+
+      private static readonly System.Collections.Generic.Dictionary<string, PlannedWrap> _plannedWraps = new System.Collections.Generic.Dictionary<string, PlannedWrap>();
+
+      private static string PlanKey( UnityEngine.Component component, string text, float width, object ui )
+      {
+         return component.GetPath() + "|" + (int)Math.Round( width ) + "|" + (int)ReadFontSize( ui ) + "|" + text;
+      }
+
+      private static void RememberPlanned( UnityEngine.Component component, string text, float width, object ui, string wrapped )
+      {
+         if( _plannedWraps.Count >= 2048 )
+         {
+            _plannedWraps.Clear();
+         }
+         _plannedWraps[ PlanKey( component, text, width, ui ) ] = new PlannedWrap { Text = wrapped };
+      }
+
       private static System.Collections.IEnumerator OverflowWrapWhenLaidOut( object ui, int id )
       {
          try
          {
-            for( int frame = 0; frame < 60; frame++ )
+            for( int frame = 0; frame < LayoutWaitFrames; frame++ )
             {
-               yield return null;
+               bool firstPassNow = frame == 0 && _pendingOverflowWrap.TryGetValue( id, out var first ) && first.Immediate;
+               if( !firstPassNow )
+               {
+                  yield return null;
+               }
 
                var raw = ui as UnityEngine.Component;
                if( raw == null || ui.IsDestroyedUnityObject() || !_pendingOverflowWrap.TryGetValue( id, out var pending ) )
@@ -1533,9 +2091,14 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                   yield break;
                }
 
-               if( frame < 3 || GetRectWidth( raw ) < 1f )
+               if( frame == 12 )
                {
-                  if( frame == 59 && Settings.EnableSdwDiagnostics )
+                  SetFitHidden( ui, id, false );
+               }
+
+               if( ( !firstPassNow && frame < ( _hiddenForFit.Contains( id ) ? 1 : 3 ) ) || GetRectWidth( raw ) < 1f )
+               {
+                  if( frame == LayoutWaitFrames - 1 && Settings.EnableSdwDiagnostics )
                   {
                      XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] gave up path='" + raw.GetPath() + "': the layout never settled" );
                   }
@@ -1564,60 +2127,259 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
                float own = GetRectWidth( component );
                bool fitter = HasContentSizeFitter( component );
-               if( IsSelfWrapping( ui ) && !fitter )
+               int fitMode = fitter ? GetHorizontalFitMode( component ) : 0;
+
+               if( fitter && fitMode < 0 && frame < 3 )
                {
-                  yield break;
+                  continue;
                }
+
+               bool selfWrap = IsSelfWrapping( ui ) && !fitter;
 
                float room = fitter ? GetContainerWidth( component ) : own;
                if( fitter && room < 200f && own > room )
                {
                   room = own;
                }
+               else if( fitter && own >= OverflowWrapMinRoom && own < room )
+               {
+                  if( fitMode == 0 )
+                  {
+                     room = own;
+                  }
+                  else if( fitMode < 0 )
+                  {
+                     var ownPreferredProperty = typed.GetType().CachedProperty( "preferredWidth" );
+                     float ownPreferred = ownPreferredProperty == null ? 0f : (float)ownPreferredProperty.Get( typed );
+                     if( Math.Abs( own - ownPreferred ) > 2f )
+                     {
+                        room = own;
+                     }
+                  }
+               }
+
+               var labelPath = raw.GetPath();
+               bool buttonLabel = IsButtonLabelPath( labelPath );
+               if( buttonLabel )
+               {
+
+                  float buttonWidth = GetParentRectWidth( component );
+                  float limit = buttonWidth >= 40f ? Math.Min( room, buttonWidth ) : room;
+                  room = limit * ButtonRoomFactor;
+               }
+               bool relaxHeight = buttonLabel;
 
                bool overflowMode = IsHorizontalOverflowMode( ui );
-               if( overflowMode && !_overflowSetByUs.Contains( id ) )
+               float widthRule = GetLabelWidthRule( labelPath );
+               if( widthRule > 0f )
                {
-                  if( Settings.EnableSdwDiagnostics )
-                  {
-                     XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] skip path='" + raw.GetPath() + "': the game lets this label overflow (rect "
-                        + own.ToString( "0" ) + "px is not a limit)" );
-                  }
-                  yield break;
+                  float ruleRoom = widthRule <= 3f ? own * widthRule : widthRule;
+                  room = Math.Min( room, ruleRoom );
                }
-               float ratio = fitter ? OverflowWrapRatioContainer : ( overflowMode ? OverflowWrapRatioOwnRect : OverflowWrapRatioWrapMode );
+               if( widthRule <= 0f && overflowMode && !selfWrap && !_overflowSetByUs.Contains( id ) )
+               {
+                  string originalText = ui.GetTextTranslationInfo()?.OriginalText;
+                  double originalWidth = ReflowWidth( originalText ) * ReadFontSize( ui ) * OriginalEmPerWidthUnit;
+                  if( originalWidth <= 0.0 )
+                  {
+                     if( Settings.EnableSdwDiagnostics )
+                     {
+                        XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] skip path='" + raw.GetPath() + "': no original text to compare with" );
+                     }
+                     RememberFit( id, expected, own );
+                     yield break;
+                  }
+
+                  if( originalWidth > own * 1.02 )
+                  {
+                     room = Math.Max( room, (float)( originalWidth * OriginalWidthTolerance ) );
+                  }
+               }
+               float ratio = fitter ? OverflowWrapRatioContainer : ( selfWrap ? OverflowWrapRatioWrapMode : ( overflowMode ? OverflowWrapRatioOwnRect : OverflowWrapRatioWrapMode ) );
+               if( widthRule > 0f )
+               {
+                  ratio = 1f;
+               }
 
                var preferredProperty = typed.GetType().CachedProperty( "preferredWidth" );
                float preferred = preferredProperty == null ? 0f : (float)preferredProperty.Get( typed );
 
-               bool wrap = room >= OverflowWrapMinRoom && preferred > room * ratio;
+               float measured = selfWrap ? 0f : MeasureTextWidth( typed, expected );
+               if( measured > preferred )
+               {
+                  preferred = measured;
+               }
+
+               bool heightOver = false;
+               if( selfWrap && own >= 1f && IsVerticalTruncateMode( ui ) )
+               {
+                  float rectHeight = GetRectHeight( component );
+                  double preferredHeight = ReadFloatProperty( typed, "preferredHeight" );
+                  heightOver = rectHeight >= 1f && preferredHeight > rectHeight * 1.02 + 0.5;
+               }
+
+               bool wrap = room >= FitMinRoom && ( preferred > room * ratio || heightOver );
                if( Settings.EnableSdwDiagnostics )
                {
                   XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] path='" + component.GetPath() + "' frame=" + frame + " ownRect=" + own.ToString( "0.0" )
                      + "x" + GetRectHeight( component ).ToString( "0.0" ) + " contentFitter=" + fitter + " overflowMode=" + overflowMode
-                     + " room=" + room.ToString( "0.0" ) + " preferred=" + preferred.ToString( "0.0" ) + " wrap=" + wrap );
+                     + " room=" + room.ToString( "0.0" ) + " preferred=" + preferred.ToString( "0.0" ) + " selfWrap=" + selfWrap
+                     + " heightOver=" + heightOver + " wrap=" + wrap );
+               }
+
+               float fixedScale = GetFixedScale( raw.GetPath() );
+               if( fixedScale > 0f )
+               {
+                  UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+                  if( _overflowSetByUs.Count >= 4096 )
+                  {
+                     _overflowSetByUs.Clear();
+                  }
+                  _overflowSetByUs.Add( id );
+                  if( expected.IndexOf( '\n' ) >= 0 )
+                  {
+                     expected = expected.Replace( "\r", string.Empty ).Replace( '\n', ' ' );
+                     AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, expected );
+                  }
+                  if( IsBalloonPath( raw.GetPath() ) && TryGrowBalloon( component, own, preferred ) )
+                  {
+                  }
+                  else if( fixedScale < 1f )
+                  {
+                     ApplyFontShrink( ui, id, fixedScale );
+                  }
+                  if( Settings.EnableSdwDiagnostics )
+                  {
+                     XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] fixed-scale path='" + raw.GetPath() + "' scale=" + fixedScale.ToString( "0.00" ) + " preferred=" + preferred.ToString( "0.0" ) + " room=" + room.ToString( "0.0" ) );
+                  }
+                  RememberFit( id, expected, own );
+                  yield break;
                }
 
                if( !wrap )
                {
+                  RememberFit( id, expected, own );
+                  yield break;
+               }
+
+               if( IsFitterRootChild( raw.GetPath() ) )
+               {
+                  UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+                  if( _overflowSetByUs.Count >= 4096 )
+                  {
+                     _overflowSetByUs.Clear();
+                  }
+                  _overflowSetByUs.Add( id );
+                  RememberFit( id, expected, own );
+                  yield break;
+               }
+
+               if( IsShrinkOnlyPath( raw.GetPath() ) && IsBalloonPath( raw.GetPath() ) && TryGrowBalloon( component, own, preferred ) )
+               {
+                  UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+                  if( _overflowSetByUs.Count >= 4096 )
+                  {
+                     _overflowSetByUs.Clear();
+                  }
+                  _overflowSetByUs.Add( id );
+                  if( expected.IndexOf( '\n' ) >= 0 )
+                  {
+                     expected = expected.Replace( "\r", string.Empty ).Replace( '\n', ' ' );
+                     AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, expected );
+                  }
+                  if( Settings.EnableSdwDiagnostics )
+                  {
+                     XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] balloon-grow path='" + raw.GetPath() + "' preferred=" + preferred.ToString( "0.0" ) + " own=" + own.ToString( "0.0" ) );
+                  }
+                  RememberFit( id, expected, own );
                   yield break;
                }
 
                if( IsShrinkOnlyPath( raw.GetPath() ) )
                {
-                  double fit = Math.Max( room / preferred, SdwWrapPlanner.MinReadableScale );
+                  double fit = Math.Max( room * SdwWrapPlanner.WidthSafety / preferred, 0.42 );
+                  if( ( Settings.NameLineWrap || IsMinPowerPath( raw.GetPath() ) ) && fit < 0.7 && expected.IndexOf( ' ' ) >= 0 && !IsBalloonPath( raw.GetPath() ) )
+                  {
+                     string lined = BuildNameLines( typed, expected.Replace( "\r", string.Empty ).Replace( '\n', ' ' ), room, out double lineScale );
+                     if( lined != null && lineScale > fit )
+                     {
+                        UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+                        UnityTypes.Text_Properties.VerticalOverflow?.Set( ui, 1 );
+                        if( _overflowSetByUs.Count >= 4096 )
+                        {
+                           _overflowSetByUs.Clear();
+                        }
+                        _overflowSetByUs.Add( id );
+                        AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, lined );
+                        RememberWrap( id, expected, lined );
+                        double finalScale = Math.Max( lineScale, 0.6 );
+                        if( finalScale < 0.99 )
+                        {
+                           ApplyFontShrink( ui, id, finalScale * 0.98 );
+                        }
+                        if( Settings.EnableSdwDiagnostics )
+                        {
+                           XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] name-lines path='" + raw.GetPath() + "' scale=" + finalScale.ToString( "0.00" ) + " font=" + ReadFontSize( ui ) + " text=" + lined.Replace( "\n", "\\n" ) );
+                        }
+                        RememberFit( id, expected, own );
+                        yield break;
+                     }
+                  }
+                  UnityTypes.Text_Properties.HorizontalOverflow?.Set( ui, 1 );
+                  if( _overflowSetByUs.Count >= 4096 )
+                  {
+                     _overflowSetByUs.Clear();
+                  }
+                  _overflowSetByUs.Add( id );
+                  if( expected.IndexOf( '\n' ) >= 0 )
+                  {
+                     expected = expected.Replace( "\r", string.Empty ).Replace( '\n', ' ' );
+                  }
+                  AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, expected );
                   ApplyFontShrink( ui, id, fit * 0.98 );
+                  StartShrinkVerify( ui, id, room, expected );
+                  if( fit <= 0.42 + 0.001 )
+                  {
+                     UnityTypes.Text_Properties.VerticalOverflow?.Set( ui, 1 );
+                  }
                   if( Settings.EnableSdwDiagnostics )
                   {
-                     XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] shrink-only path='" + raw.GetPath() + "' scale=" + fit.ToString( "0.00" ) );
+                     XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] shrink-only path='" + raw.GetPath() + "' scale=" + fit.ToString( "0.00" ) + " font=" + ReadFontSize( ui ) );
                   }
+                  RememberFit( id, expected, own );
                   yield break;
                }
 
                string diag;
-               var plan = TryBuildWrapPlan( ui, typed, component, expected, room, fitter, pending.SoftLines, out diag );
+               var plan = TryBuildWrapPlan( ui, typed, component, expected, room, fitter, pending.SoftLines, relaxHeight, out diag );
 
-               AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, plan != null ? plan.Text : expected );
+               if( plan == null )
+               {
+
+                  bool unbreakable = expected.IndexOf( ' ' ) < 0 && expected.IndexOf( '\n' ) < 0;
+                  double floorScale = unbreakable ? SdwWrapPlanner.MinUnbreakableScale : SdwWrapPlanner.MinReadableScale;
+                  double fitScale = preferred > room * ratio ? Math.Max( room * SdwWrapPlanner.WidthSafety / preferred, floorScale ) : 1.0;
+                  if( fitScale < 1.0 )
+                  {
+                     ApplyFontShrink( ui, id, fitScale * 0.98 );
+                  }
+
+                  AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, expected );
+
+                  if( heightOver || fitScale <= floorScale + 0.001 )
+                  {
+                     UnityTypes.Text_Properties.VerticalOverflow?.Set( ui, 1 );
+                  }
+
+                  if( Settings.EnableSdwDiagnostics )
+                  {
+                     XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] no plan path='" + raw.GetPath() + "' scale=" + fitScale.ToString( "0.00" ) + " " + diag );
+                  }
+                  RememberFit( id, expected, own );
+                  yield break;
+               }
+
+               AutoTranslationPlugin.Current?.ReapplyTranslatedText( ui, plan.Text );
 
                if( plan != null )
                {
@@ -1630,14 +2392,27 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
                   RememberWrap( id, expected, plan.Text );
 
-                  bool shrink = plan.Scale < SdwWrapPlanner.OkScale && plan.Scale >= SdwWrapPlanner.MinReadableScale;
+                  bool widthOver = plan.MaxWidth > room * SdwWrapPlanner.WidthSafety + 0.5;
+                  bool shrink = plan.Scale < SdwWrapPlanner.OkScale || widthOver;
                   if( shrink )
                   {
-                     ApplyFontShrink( ui, id, plan.Scale * 0.98 );
+                     ApplyFontShrink( ui, id, Math.Max( plan.Scale, SdwWrapPlanner.MinReadableScale ) * 0.98 );
                   }
                   else if( plan.Lines == 1 && plan.Scale < SdwWrapPlanner.OkScale )
                   {
                      AlignLeft( ui );
+                  }
+
+                  if( plan.HeightIgnored || plan.Scale < SdwWrapPlanner.MinReadableScale )
+                  {
+                     UnityTypes.Text_Properties.VerticalOverflow?.Set( ui, 1 );
+                  }
+
+                  RememberFit( id, expected, own, plan.Text );
+
+                  if( !shrink && !plan.HeightIgnored )
+                  {
+                     RememberPlanned( raw, expected, own, ui, plan.Text );
                   }
 
                   if( Settings.EnableSdwDiagnostics )
@@ -1652,6 +2427,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          finally
          {
             _pendingOverflowWrap.Remove( id );
+            SetFitHidden( ui, id, false );
          }
       }
 
@@ -1696,6 +2472,210 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return (int?)UnityTypes.Text_Properties.FontSize?.Get( ui ) ?? 0;
       }
 
+      private static bool IsBalloonPath( string path )
+      {
+         return path != null
+            && ( path.IndexOf( "/BalloonRoot/", StringComparison.OrdinalIgnoreCase ) >= 0
+               || path.IndexOf( "/CommonPopBalloon", StringComparison.OrdinalIgnoreCase ) >= 0
+               || path.IndexOf( "/BoostIcon/", StringComparison.OrdinalIgnoreCase ) >= 0
+               || path.IndexOf( "/Text_Limit", StringComparison.OrdinalIgnoreCase ) >= 0 );
+      }
+
+      private const float BalloonPadding = 16f;
+      private const float BalloonMaxWidth = 460f;
+
+      private static bool TryGrowBalloon( UnityEngine.Component label, float own, float preferred )
+      {
+         try
+         {
+            if( preferred <= 0f )
+            {
+               return false;
+            }
+
+            float need = Math.Min( preferred * 1.04f + BalloonPadding, BalloonMaxWidth );
+            if( need <= own + 0.5f )
+            {
+               return true;
+            }
+
+            float delta = need - own;
+            var rt = label.GetComponent<UnityEngine.RectTransform>();
+            if( rt == null )
+            {
+               return false;
+            }
+
+            bool stretched = Math.Abs( rt.anchorMax.x - rt.anchorMin.x ) > 0.001f;
+            if( !stretched )
+            {
+               rt.SetSizeWithCurrentAnchors( UnityEngine.RectTransform.Axis.Horizontal, own + delta );
+            }
+
+            var current = rt.parent == null ? null : rt.parent.GetComponent<UnityEngine.RectTransform>();
+            for( int level = 0; level < 3 && current != null; level++ )
+            {
+               string name = current.name ?? string.Empty;
+               current.SetSizeWithCurrentAnchors( UnityEngine.RectTransform.Axis.Horizontal, current.rect.width + delta );
+               if( name.IndexOf( "Balloon", StringComparison.OrdinalIgnoreCase ) >= 0
+                  || name.IndexOf( "Base", StringComparison.OrdinalIgnoreCase ) >= 0
+                  || name.IndexOf( "BoostIcon", StringComparison.OrdinalIgnoreCase ) >= 0 )
+               {
+                  break;
+               }
+               current = current.parent == null ? null : current.parent.GetComponent<UnityEngine.RectTransform>();
+            }
+            return true;
+         }
+         catch( System.Exception e )
+         {
+            XuaLogger.AutoTranslator.Debug( "SdwTextCustomHook.TryGrowBalloon failed: " + e.Message );
+            return false;
+         }
+      }
+
+      private static string BuildNameLines( object typed, string text, float room, out double scale )
+      {
+         scale = 1.0;
+         var words = text.Split( new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries );
+         if( words.Length < 2 )
+         {
+            return null;
+         }
+
+         string best = null;
+         double bestScale = -1.0;
+         int maxLines = Math.Min( 3, words.Length );
+         for( int lines = 2; lines <= maxLines; lines++ )
+         {
+            string candidate = null;
+            float candidateWidth = float.MaxValue;
+            if( lines == 2 )
+            {
+               for( int i = 1; i < words.Length; i++ )
+               {
+                  var text2 = string.Join( " ", words, 0, i ) + "\n" + string.Join( " ", words, i, words.Length - i );
+                  float w = MeasureTextWidth( typed, text2 );
+                  if( w > 0f && w < candidateWidth ) { candidateWidth = w; candidate = text2; }
+               }
+            }
+            else
+            {
+               for( int i = 1; i < words.Length - 1; i++ )
+               {
+                  for( int j = i + 1; j < words.Length; j++ )
+                  {
+                     var text3 = string.Join( " ", words, 0, i ) + "\n" + string.Join( " ", words, i, j - i ) + "\n" + string.Join( " ", words, j, words.Length - j );
+                     float w = MeasureTextWidth( typed, text3 );
+                     if( w > 0f && w < candidateWidth ) { candidateWidth = w; candidate = text3; }
+                  }
+               }
+            }
+
+            if( candidate == null )
+            {
+               continue;
+            }
+
+            double candidateScale = Math.Min( 1.0, room * SdwWrapPlanner.WidthSafety / candidateWidth );
+            if( candidateScale > bestScale )
+            {
+               best = candidate;
+               bestScale = candidateScale;
+            }
+            if( candidateScale >= 0.8 )
+            {
+               break;
+            }
+         }
+
+         scale = bestScale;
+         return best;
+      }
+
+      private static readonly System.Collections.Generic.HashSet<int> _shrinkVerifiers = new System.Collections.Generic.HashSet<int>();
+
+      private static void StartShrinkVerify( object ui, int id, float room, string expected )
+      {
+         if( room < 1f || _shrinkVerifiers.Count >= 256 )
+         {
+            return;
+         }
+         if( _shrinkVerifiers.Add( id ) )
+         {
+            XUnity.AutoTranslator.Plugin.Core.Utilities.CoroutineHelper.Start( VerifyShrinkFit( ui, id, room, expected ) );
+         }
+      }
+
+      private static System.Collections.IEnumerator VerifyShrinkFit( object ui, int id, float room, string expected )
+      {
+         try
+         {
+            double target = room * SdwWrapPlanner.WidthSafety;
+            for( int pass = 0; pass < 6; pass++ )
+            {
+               yield return null;
+               yield return null;
+
+               var unityObject = ui as UnityEngine.Object;
+               if( unityObject == null )
+               {
+                  yield break;
+               }
+               if( !_shrunkFonts.TryGetValue( id, out var record ) )
+               {
+                  yield break;
+               }
+
+               var preferredProperty = ui.GetType().CachedProperty( "preferredWidth" );
+               if( preferredProperty == null )
+               {
+                  yield break;
+               }
+               float preferred = (float)preferredProperty.Get( ui );
+               int current = ReadFontSize( ui );
+               if( preferred < 1f || current <= 0 )
+               {
+                  continue;
+               }
+
+               int next = current;
+               if( preferred > target + 1.0 )
+               {
+                  next = Math.Max( 8, (int)Math.Floor( current * target / preferred ) );
+               }
+               else if( preferred < target * 0.9 && current < record.Original )
+               {
+                  next = Math.Min( record.Original, (int)Math.Floor( current * target / preferred ) );
+               }
+
+               if( next == current )
+               {
+                  yield break;
+               }
+               if( next >= record.Original )
+               {
+                  UnityTypes.Text_Properties.FontSize.Set( ui, record.Original );
+                  _shrunkFonts.Remove( id );
+               }
+               else
+               {
+                  UnityTypes.Text_Properties.FontSize.Set( ui, next );
+                  record.Shrunk = next;
+               }
+               ForceTextRebuild( ui );
+               if( Settings.EnableSdwDiagnostics )
+               {
+                  XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] verify id=" + id + " pass=" + pass + " preferred=" + preferred.ToString( "0" ) + " target=" + target.ToString( "0" ) + " font " + current + " -> " + next );
+               }
+            }
+         }
+         finally
+         {
+            _shrinkVerifiers.Remove( id );
+         }
+      }
+
       private static void ApplyFontShrink( object ui, int id, double scale )
       {
          try
@@ -1718,10 +2698,90 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             }
             _shrunkFonts[ id ] = new ShrunkFont { Original = fontSize, Shrunk = shrunk };
             UnityTypes.Text_Properties.FontSize.Set( ui, shrunk );
+            ForceTextRebuild( ui );
+            StartFontWatch( ui, id );
          }
          catch( System.Exception e )
          {
             XuaLogger.AutoTranslator.Debug( "SdwTextCustomHook.ApplyFontShrink failed: " + e.Message );
+         }
+      }
+
+      private static readonly System.Collections.Generic.HashSet<int> _fontWatchers = new System.Collections.Generic.HashSet<int>();
+      private const int FontWatchFrames = 150;
+
+      private static void StartFontWatch( object ui, int id )
+      {
+         if( _fontWatchers.Count >= 1024 )
+         {
+            return;
+         }
+         if( _fontWatchers.Add( id ) )
+         {
+            XUnity.AutoTranslator.Plugin.Core.Utilities.CoroutineHelper.Start( WatchShrunkFont( ui, id ) );
+         }
+      }
+
+      private static System.Collections.IEnumerator WatchShrunkFont( object ui, int id )
+      {
+         for( int frame = 1; frame <= FontWatchFrames; frame++ )
+         {
+            yield return null;
+            if( !CheckShrunkFont( ui, id, frame ) )
+            {
+               break;
+            }
+         }
+         _fontWatchers.Remove( id );
+      }
+
+      private static readonly string[] DirtyMethodNames = { "SetAllDirty", "SetVerticesDirty", "SetLayoutDirty", "SetMaterialDirty" };
+
+      private static void ForceTextRebuild( object ui )
+      {
+         try
+         {
+            var type = ui.GetType();
+            foreach( var name in DirtyMethodNames )
+            {
+               var method = type.GetMethod( name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public, null, System.Type.EmptyTypes, null );
+               method?.Invoke( ui, null );
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+      }
+
+      private static bool CheckShrunkFont( object ui, int id, int frame )
+      {
+         try
+         {
+            var component = ui as UnityEngine.Component;
+            if( component == null || ui.IsDestroyedUnityObject() || !_shrunkFonts.TryGetValue( id, out var record ) )
+            {
+               return false;
+            }
+
+            if( frame == 1 || frame == 2 || frame == 4 || frame == 8 )
+            {
+               ForceTextRebuild( ui );
+            }
+
+            int current = ReadFontSize( ui );
+            if( current > 0 && current != record.Shrunk )
+            {
+               UnityTypes.Text_Properties.FontSize.Set( ui, record.Shrunk );
+               if( Settings.EnableSdwDiagnostics )
+               {
+                  XuaLogger.AutoTranslator.Debug( "[OVERFLOW-WRAP] font-reset path='" + component.GetPath() + "' frame=" + frame + " was=" + current + " back-to=" + record.Shrunk );
+               }
+            }
+            return true;
+         }
+         catch( System.Exception )
+         {
+            return false;
          }
       }
 
@@ -1769,9 +2829,168 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return property.Get( typed ) is float f ? f : 0;
       }
 
-      private static SdwWrapPlan TryBuildWrapPlan( object ui, object typed, UnityEngine.Component component, string text, float room, bool fitter, int softLines, out string diag )
+      private static System.Reflection.PropertyInfo _rawTextProperty;
+      private static System.Reflection.FieldInfo _rawTextField;
+      private static bool _rawTextResolved;
+
+      private static void ResolveRawText( object typed )
+      {
+         if( _rawTextResolved || typed == null )
+         {
+            return;
+         }
+
+         _rawTextResolved = true;
+         try
+         {
+            var type = typed.GetType();
+            var property = HarmonyLib.AccessTools.Property( type, "m_Text" );
+            if( property != null && property.CanRead && property.CanWrite )
+            {
+               _rawTextProperty = property;
+            }
+            else
+            {
+               _rawTextField = HarmonyLib.AccessTools.Field( type, "m_Text" );
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+
+         if( _rawTextProperty == null && _rawTextField == null )
+         {
+            XuaLogger.AutoTranslator.Warn( "SdwTextCustomHook: Text.m_Text could not be resolved; measuring text may leave the last measured word in a label." );
+         }
+      }
+
+      internal static string ReadRawText( object typed )
+      {
+         try
+         {
+            ResolveRawText( typed );
+            if( _rawTextProperty != null )
+            {
+               return _rawTextProperty.GetValue( typed, null ) as string;
+            }
+            if( _rawTextField != null )
+            {
+               return _rawTextField.GetValue( typed ) as string;
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+         return null;
+      }
+
+      internal static void RestoreRawText( object typed, string saved )
+      {
+         if( saved == null || typed == null )
+         {
+            return;
+         }
+
+         try
+         {
+            ResolveRawText( typed );
+            if( string.Equals( ReadRawText( typed ), saved, StringComparison.Ordinal ) )
+            {
+               return;
+            }
+
+            if( _rawTextProperty != null )
+            {
+               _rawTextProperty.SetValue( typed, saved, null );
+            }
+            else if( _rawTextField != null )
+            {
+               _rawTextField.SetValue( typed, saved );
+            }
+         }
+         catch( System.Exception e )
+         {
+            XuaLogger.AutoTranslator.Debug( "SdwTextCustomHook.RestoreRawText failed: " + e.Message );
+         }
+      }
+
+      private static bool IsVerticalTruncateMode( object ui )
+      {
+         try
+         {
+            var value = UnityTypes.Text_Properties.VerticalOverflow?.Get( ui );
+            return value != null && Convert.ToInt32( value ) == 0;
+         }
+         catch( System.Exception )
+         {
+            return false;
+         }
+      }
+
+      private static bool MayOverflowRect( UnityEngine.Component component, string text )
+      {
+         try
+         {
+            float width = GetRectWidth( component );
+            int fontSize = ReadFontSize( component );
+            if( width <= 1f || width >= float.MaxValue || fontSize <= 0 )
+            {
+               return true;
+            }
+
+            double widest = 0;
+            foreach( var line in text.Split( '\n' ) )
+            {
+               widest = Math.Max( widest, ReflowWidth( line ) );
+            }
+            return widest * fontSize * 0.55 > width * 0.7;
+         }
+         catch( System.Exception )
+         {
+            return true;
+         }
+      }
+
+      private static float MeasureTextWidth( object typed, string text )
+      {
+         string rawBefore = ReadRawText( typed );
+         try
+         {
+            if( _getTextWidthMethodInfo == null )
+            {
+               _getTextWidthMethodInfo = HarmonyLib.AccessTools.Method( _sdwTextClrType, "GetTextWidth", new System.Type[] { typeof( string ) } );
+               if( _getTextWidthMethodInfo == null )
+               {
+                  return 0f;
+               }
+            }
+
+            float widest = 0f;
+            foreach( var line in text.Split( '\n' ) )
+            {
+               var clean = line.IndexOf( '<' ) >= 0 ? ReflowTagRegex.Replace( line, string.Empty ) : line;
+               if( clean.Length == 0 )
+               {
+                  continue;
+               }
+               widest = Math.Max( widest, Convert.ToSingle( _getTextWidthMethodInfo.Invoke( typed, new object[] { clean } ) ) );
+            }
+            return widest;
+         }
+         catch( System.Exception )
+         {
+            return 0f;
+         }
+         finally
+         {
+            RestoreRawText( typed, rawBefore );
+         }
+      }
+
+      private static SdwWrapPlan TryBuildWrapPlan( object ui, object typed, UnityEngine.Component component, string text, float room, bool fitter, int softLines, bool relaxHeight, out string diag )
       {
          diag = string.Empty;
+         string rawBefore = ReadRawText( typed );
          try
          {
             if( _getTextWidthMethodInfo == null || _getSpaceWidthMethodInfo == null )
@@ -1815,6 +3034,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             }
 
             double space = Convert.ToDouble( _getSpaceWidthMethodInfo.Invoke( typed, null ) );
+            space += Math.Max( 0.0, Convert.ToDouble( _getTextWidthMethodInfo.Invoke( typed, new object[] { " " } ) ) );
             var known = new System.Collections.Generic.Dictionary<string, double>();
             var widths = new double[ paragraphs.Count ][];
             for( int p = 0; p < paragraphs.Count; p++ )
@@ -1825,13 +3045,18 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                {
                   if( !known.TryGetValue( words[ i ], out var width ) )
                   {
-                     width = Convert.ToDouble( _getTextWidthMethodInfo.Invoke( typed, new object[] { words[ i ] } ) );
+
+                     var measured = words[ i ].IndexOf( '<' ) >= 0 ? ReflowTagRegex.Replace( words[ i ], string.Empty ) : words[ i ];
+                     width = measured.Length == 0
+                        ? 0.0
+                        : Convert.ToDouble( _getTextWidthMethodInfo.Invoke( typed, new object[] { measured } ) );
                      known[ words[ i ] ] = width;
                   }
                   widths[ p ][ i ] = width;
                }
             }
 
+            _getTextWidthMethodInfo.Invoke( typed, new object[] { "M" } );
             double lineHeight = ReadFloatProperty( typed, "preferredHeight" );
             double rectHeight = GetRectHeight( component );
             double spacing = UnityTypes.Text_Properties.LineSpacing?.Get( ui ) is float ls && ls > 0.05f ? ls : 1.0;
@@ -1842,20 +3067,32 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                maxLines = Math.Max( 1.0, 1.0 + Math.Floor( ( rectHeight - lineHeight ) / ( lineHeight * spacing ) + 0.1 ) );
             }
 
+            if( relaxHeight )
+            {
+
+               maxLines = Math.Max( maxLines, RelaxedMaxLines );
+            }
+
             diag = "lineH=" + lineHeight.ToString( "0.0" ) + " rectH=" + rectHeight.ToString( "0.0" ) + " lineSpacing=" + spacing.ToString( "0.000" )
                + " maxLines=" + ( maxLines == double.MaxValue ? "any" : maxLines.ToString( "0" ) ) + " soft=" + softLines;
 
             var plan = SdwWrapPlanner.Plan( paragraphs.ToArray(), widths, space, room, maxLines, minLines.ToArray() );
-            if( maxLines <= 1.0 && plan.HeightIgnored )
+            if( Settings.EnableSdwDiagnostics && plan != null )
             {
-               diag += " one-line-unfittable";
-               return null;
+               double total = 0;
+               int wordCount = 0;
+               foreach( var w in widths ) { foreach( var x in w ) { total += x; wordCount++; } }
+               diag += " paras=" + paragraphs.Count + " words=" + wordCount + " sumW=" + total.ToString( "0" ) + " space=" + space.ToString( "0.0" ) + " room=" + room.ToString( "0" );
             }
             return plan;
          }
          catch( System.Exception e )
          {
             XuaLogger.AutoTranslator.Debug( "SdwTextCustomHook.TryBuildWrapPlan failed: " + e.Message );
+         }
+         finally
+         {
+            RestoreRawText( typed, rawBefore );
          }
          return null;
       }
@@ -1888,6 +3125,8 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return words >= 5 && nonEmptyLines * 10 >= words * 6;
       }
 
+      private static readonly System.Text.RegularExpressions.Regex BlankLineRegex = new System.Text.RegularExpressions.Regex( "[ \\t]*\\r?\\n(?:[ \\t]*\\r?\\n)+", System.Text.RegularExpressions.RegexOptions.Compiled );
+
       private static void GetFormatedText_Postfix( object __instance, string msg, ref string __result )
       {
          using( XUnity.AutoTranslator.Plugin.Core.Utilities.HitchProfiler.Measure( "Hook.GetFormatedTextPost" ) )
@@ -1911,6 +3150,19 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             if( cleaned.Length > 0 )
             {
                __result = cleaned;
+            }
+
+            if( __result.IndexOf( '\n' ) >= 0 )
+            {
+               var labelForPath = __instance as UnityEngine.Component;
+               if( msg.IndexOf( '\n' ) < 0 && labelForPath != null && IsShrinkOnlyPath( labelForPath.GetPath() ) )
+               {
+                  __result = BlankLineRegex.Replace( __result, " " ).Replace( '\n', ' ' );
+               }
+               else if( !BlankLineRegex.IsMatch( msg ) )
+               {
+                  __result = BlankLineRegex.Replace( __result, "\n" );
+               }
             }
 
             var labelComponent = __instance as UnityEngine.Component;
@@ -1964,9 +3216,60 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return true;
       }
 
-      private static bool ExtendCharacterField( System.Type sdwTextType, string fieldName, char[] additions )
+      private static char[] ReadCharTable( System.Reflection.PropertyInfo property )
       {
-         System.Reflection.PropertyInfo property = HarmonyLib.AccessTools.Property( sdwTextType, fieldName );
+         try
+         {
+            if( property == null || !property.CanRead || !property.CanWrite || property.GetIndexParameters().Length != 0 )
+            {
+               return null;
+            }
+
+            if( property.GetValue( null, null ) is System.Collections.Generic.IList<char> list && list.Count > 0 )
+            {
+               var result = new char[ list.Count ];
+               for( int i = 0; i < result.Length; i++ )
+               {
+                  result[ i ] = list[ i ];
+               }
+               return result;
+            }
+         }
+         catch( System.Exception )
+         {
+         }
+         return null;
+      }
+
+      private static System.Reflection.PropertyInfo FindCharTable( System.Type sdwTextType, string fieldName, System.Func<char[], bool> identify )
+      {
+         System.Reflection.PropertyInfo byName = HarmonyLib.AccessTools.Property( sdwTextType, fieldName );
+         if( byName != null )
+         {
+            return byName;
+         }
+
+         const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+         foreach( var candidate in sdwTextType.GetProperties( flags ) )
+         {
+            if( !typeof( System.Collections.Generic.IList<char> ).IsAssignableFrom( candidate.PropertyType ) )
+            {
+               continue;
+            }
+
+            var content = ReadCharTable( candidate );
+            if( content != null && identify( content ) )
+            {
+               XuaLogger.AutoTranslator.Info( "SdwTextCustomHook: SdwText." + fieldName + " not found by name; using '" + candidate.Name + "' (matched by contents)." );
+               return candidate;
+            }
+         }
+         return null;
+      }
+
+      private static bool ExtendCharacterField( System.Type sdwTextType, string fieldName, char[] additions, System.Func<char[], bool> identify )
+      {
+         System.Reflection.PropertyInfo property = FindCharTable( sdwTextType, fieldName, identify );
          if( property == null )
          {
             XuaLogger.AutoTranslator.Warn( "SdwTextCustomHook: SdwText." + fieldName + " could not be resolved via reflection." );
@@ -2028,8 +3331,11 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
    internal static class SdwWrapPlanner
    {
       public const double OkScale = 0.95;
-      public const double MinReadableScale = 0.6;
+      public const double WidthSafety = 0.98;
+      public const double MinReadableScale = 0.55;
+      public const double MinUnbreakableScale = 0.5;
       private const int MaxLinesPerParagraph = 8;
+      private const int HardMaxLinesPerParagraph = 40;
 
       private static readonly System.Collections.Generic.HashSet<string> WeakLineEnders = new System.Collections.Generic.HashSet<string>(
          ( "в во на и а но да с со к ко о об обо от до по за из изо у не ни как что чтобы если когда же ли бы я ты он она мы вы они "
@@ -2048,6 +3354,30 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
          return w.Trim( '»', '”', '"', '\'', ')', ']', '(', '[', '«', '“' ).ToLowerInvariant();
       }
 
+      private static bool IsSentenceEndBeforeCapital( string core, string after )
+      {
+         if( core.Length < 2 || string.IsNullOrEmpty( after ) )
+         {
+            return false;
+         }
+
+         bool hasDigit = false;
+         foreach( var ch in core ) if( char.IsDigit( ch ) ) { hasDigit = true; break; }
+         if( !hasDigit && core.Length < 3 )
+         {
+            return false;
+         }
+
+         var rest = after.TrimStart( '«', '“', '"', '(', '[', '\'' );
+         while( rest.StartsWith( "<" ) )
+         {
+            int close = rest.IndexOf( '>' );
+            if( close < 0 ) break;
+            rest = rest.Substring( close + 1 );
+         }
+         return rest.Length > 0 && char.IsUpper( rest[ 0 ] );
+      }
+
       private static double BreakAdjustment( string before, string after )
       {
          double adj = 0;
@@ -2056,9 +3386,9 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          char last = t[ t.Length - 1 ];
          var core = BreakCore( t ).TrimEnd( '.', ',', ';', ':', '!', '?', '…' );
-         if( last == '!' || last == '?' || last == '…' || ( last == '.' && core.Length >= 4 ) )
+         if( last == '!' || last == '?' || last == '…' || ( last == '.' && ( core.Length >= 4 || IsSentenceEndBeforeCapital( core, after ) ) ) )
          {
-            adj = -0.30;
+            adj = -0.45;
          }
          else if( last == ',' || last == ';' || last == ':' )
          {
@@ -2091,6 +3421,18 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
 
          System.Func<int, int, double> lineWidth = ( from, to ) => prefix[ to ] - prefix[ from ] + space * ( to - from - 1 );
 
+         var insideQuote = new bool[ n + 1 ];
+         int depth = 0;
+         for( int i = 0; i < n; i++ )
+         {
+            foreach( var ch in words[ i ] )
+            {
+               if( ch == '«' ) depth++;
+               else if( ch == '»' && depth > 0 ) depth--;
+            }
+            insideQuote[ i + 1 ] = depth > 0;
+         }
+
          double ideal = ( prefix[ n ] + space * ( n - lines ) ) / lines;
          var cost = new double[ lines + 1, n + 1 ];
          var prev = new int[ lines + 1, n + 1 ];
@@ -2112,6 +3454,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                   double c = cost[ k - 1, j ] + d * d;
                   if( i - j == 1 ) c += 0.20 * ideal * ideal;
                   if( i < n ) c += BreakAdjustment( words[ i - 1 ], words[ i ] ) * ideal * ideal;
+                  if( i < n && insideQuote[ i ] ) c += 0.60 * ideal * ideal;
                   if( c < cost[ k, i ] )
                   {
                      cost[ k, i ] = c;
@@ -2157,7 +3500,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             sb.Append( string.Join( "\n", option.Lines ) );
          }
 
-         double scaleWidth = widest > room ? room / widest : 1.0;
+         double scaleWidth = widest > room * WidthSafety ? room * WidthSafety / widest : 1.0;
          double scaleHeight = maxLinesByHeight < total ? maxLinesByHeight / total : 1.0;
          return new SdwWrapPlan
          {
@@ -2171,7 +3514,8 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
       public static SdwWrapPlan Plan( string[][] paragraphs, double[][] widths, double space, double room, double maxLinesByHeight, int[] minLines )
       {
          int count = paragraphs.Length;
-         double fitLimit = room / OkScale;
+
+         double fitLimit = room * WidthSafety;
          var options = new Option[ count ][];
          var counts = new int[ count ];
 
@@ -2185,7 +3529,10 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
                continue;
             }
 
-            int kmax = System.Math.Min( words.Length, MaxLinesPerParagraph );
+            double totalWidth = space * System.Math.Max( 0, words.Length - 1 );
+            foreach( var w in widths[ p ] ) totalWidth += w;
+            int needed = fitLimit > 1 ? (int)System.Math.Ceiling( totalWidth / fitLimit ) + 2 : MaxLinesPerParagraph;
+            int kmax = System.Math.Min( words.Length, System.Math.Min( HardMaxLinesPerParagraph, System.Math.Max( MaxLinesPerParagraph, needed ) ) );
             options[ p ] = new Option[ kmax ];
             int firstFit = -1;
             int narrowestK = kmax;
@@ -2246,7 +3593,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Hooks
             if( best.Scale < MinReadableScale )
             {
                first.HeightIgnored = true;
-               first.Scale = first.MaxWidth > room ? room / first.MaxWidth : 1.0;
+               first.Scale = first.MaxWidth > room * WidthSafety ? System.Math.Max( room * WidthSafety / first.MaxWidth, MinUnbreakableScale ) : 1.0;
                best = first;
             }
          }
