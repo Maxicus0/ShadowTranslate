@@ -1000,6 +1000,9 @@ namespace XUnity.AutoTranslator.Plugin.Core
       internal void SetTranslatedText( object ui, string translatedText, string originalText, TextTranslationInfo info )
       {
          translatedText = Hooks.SdwTextCustomHook.ReflowLikeOriginal( ui, translatedText, originalText ?? info?.OriginalText );
+         translatedText = Hooks.SdwTextCustomHook.TryGetPlannedText( ui, translatedText ) ?? translatedText;
+
+         Hooks.SdwTextCustomHook.LogCyrillic( ui, translatedText, originalText ?? info?.OriginalText );
 
          info?.SetTranslatedText( translatedText );
 

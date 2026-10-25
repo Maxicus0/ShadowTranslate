@@ -107,6 +107,13 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
       public static string StoryScriptMasterTextMember;
       public static string[][] ForceBypassedSdwTextPaths;
       public static bool EnableSdwDiagnostics;
+      public static string SingleLinePathParts;
+      public static string LabelWidthRules;
+      public static bool LogCyrillicTranslations;
+      public static string LabelFixedScaleRules;
+      public static bool NameLineWrap;
+      public static string SettleFramePathParts;
+      public static bool EnableFontDiagnostics;
       public static bool EnableHitchProfiler;
       public static bool EnableVSync;
       public static int[] SdwPrebakeFontSizes;
@@ -261,7 +268,14 @@ namespace XUnity.AutoTranslator.Plugin.Core.Configuration
             StoryScriptMasterTextMember = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "StoryScriptMasterTextMember", string.Empty );
             ForceBypassedSdwTextPaths = ParseForceBypassedSdwTextPaths(
                PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "ForceBypassedSdwTextPaths", "Download_SystemTips,TipsObject" ) );
-            EnableSdwDiagnostics = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableSdwDiagnostics", false );
+            EnableSdwDiagnostics = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableSdwDiagnostics", true );
+            SingleLinePathParts = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "SingleLinePathParts", "/BalloonRoot/;/CommonPopBalloon;/BoostIcon/;/Text_Limit;/DesiredItemView/Text_Name;/ItemName/ItemName;/EquipmentDetail/LayoutArea/UpperArea/TextArea/NameLabel;/DetailTable01/Text_Template" );
+            LabelWidthRules = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "LabelWidthRules4", "/DesiredItemView/Text_Name=0.74;/ItemName/ItemName=0.7;/EquipmentDetail/LayoutArea/UpperArea/TextArea/NameLabel=0.5;/DetailTable01/Text_Template=0.66" );
+            LogCyrillicTranslations = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "LogCyrillicTranslations", true );
+            NameLineWrap = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "NameLineWrap", false );
+            LabelFixedScaleRules = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "FixedScaleRules", "/CommonPopBalloon=1.0" );
+            SettleFramePathParts = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "SettleFramePathParts", "/ScreenNameText" );
+            EnableFontDiagnostics = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableFontDiagnostics", false );
             EnableHitchProfiler = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableHitchProfiler", false );
             EnableVSync = PluginEnvironment.Current.Preferences.GetOrDefault( "Behaviour", "EnableVSync", true );
             SdwPrebakeFontSizes = ParsePrebakeSizes(

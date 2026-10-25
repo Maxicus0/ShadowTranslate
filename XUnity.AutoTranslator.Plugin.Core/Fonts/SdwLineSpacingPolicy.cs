@@ -44,7 +44,7 @@ namespace XUnity.AutoTranslator.Plugin.Core.Fonts
 
             UnityTypes.Text_Properties.LineSpacing.Set( ui, wanted );
 
-            if( Settings.EnableSdwDiagnostics )
+            if( Settings.EnableFontDiagnostics )
             {
                XuaLogger.AutoTranslator.Debug( "[LINE-POLICY] '" + ( ui as Component )?.GetPath() + "' lineSpacing "
                   + currentValue.ToString( "0.000" ) + " -> " + wanted.ToString( "0.000" )
